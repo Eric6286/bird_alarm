@@ -1,0 +1,2 @@
+com.birdalarm.nativealarm:style/AppTheme = 0x7f020000
+com.birdalarm.nativealarm:drawable/ic_launcher_bird = 0x7f010000
