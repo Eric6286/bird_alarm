@@ -230,6 +230,8 @@ class AlarmSoundService : Service() {
                         snoozeIntent
                     )
                 }
+                // Android 16 (API 36) 上请求把响铃常驻通知提级为 Live Update。
+                AlarmReceiver.requestPromotedOngoing(this)
             }
             .build()
     }

@@ -171,6 +171,44 @@ class MainActivity : FlutterActivity() {
         } else {
             alarmManager.setExact(AlarmManager.RTC_WAKEUP, triggerAtMillis, idleOperation)
         }
+        schedulePreAlarmCountdown(triggerAtMillis)
+    }
+
+    // 响铃前 10 分钟安排一个倒计时通知（Live Update）；若已不足 10 分钟则立即显示。
+    private fun schedulePreAlarmCountdown(triggerAtMillis: Long) {
+        val leadAt = triggerAtMillis - AlarmReceiver.PRE_ALARM_LEAD_MILLIS
+        if (leadAt <= System.currentTimeMillis()) {
+            AlarmReceiver.showCountdownNotification(this, triggerAtMillis)
+            return
+        }
+        val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                alarmManager.setExactAndAllowWhileIdle(
+                    AlarmManager.RTC_WAKEUP,
+                    leadAt,
+                    preAlarmPendingIntent(triggerAtMillis)
+                )
+            } else {
+                alarmManager.setExact(
+                    AlarmManager.RTC_WAKEUP,
+                    leadAt,
+                    preAlarmPendingIntent(triggerAtMillis)
+                )
+            }
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun preAlarmPendingIntent(triggerAtMillis: Long): PendingIntent {
+        return PendingIntent.getBroadcast(
+            this,
+            AlarmReceiver.PRE_ALARM_REQUEST_CODE,
+            Intent(this, AlarmReceiver::class.java)
+                .setAction(AlarmReceiver.ACTION_PRE_ALARM)
+                .putExtra(AlarmReceiver.EXTRA_TRIGGER_AT, triggerAtMillis),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
     }
 
     private fun cancelAlarm() {
@@ -184,6 +222,9 @@ class MainActivity : FlutterActivity() {
         alarmManager.cancel(alarmBroadcastPendingIntent(1001))
         alarmManager.cancel(alarmBroadcastPendingIntent(1004))
         alarmManager.cancel(alarmActivityPendingIntent())
+        alarmManager.cancel(preAlarmPendingIntent(0L))
+        (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
+            .cancel(AlarmReceiver.COUNTDOWN_NOTIFICATION_ID)
     }
 
     private fun armForegroundAlarmService(triggerAtMillis: Long) {
