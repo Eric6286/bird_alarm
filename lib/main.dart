@@ -36,7 +36,7 @@ class BirdAlarmApp extends StatelessWidget {
         useMaterial3: true,
         scaffoldBackgroundColor: const Color(0xFFFFF5DF),
         appBarTheme: const AppBarTheme(backgroundColor: Color(0xFFFFF5DF)),
-        cardTheme: CardTheme(
+        cardTheme: CardThemeData(
           color: Colors.white,
           elevation: 0,
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
@@ -48,7 +48,7 @@ class BirdAlarmApp extends StatelessWidget {
           brightness: Brightness.dark,
         ),
         useMaterial3: true,
-        cardTheme: CardTheme(
+        cardTheme: CardThemeData(
           elevation: 0,
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
         ),
@@ -2127,7 +2127,7 @@ class _AboutPage extends StatelessWidget {
                 const Text('绿啸冠鸫 · XC1088985', style: TextStyle(fontSize: 13)),
                 const Text('噪鹃 · XC1101779', style: TextStyle(fontSize: 13)),
                 const SizedBox(height: 8),
-                const Text(
+                Text(
                   '所有录音均遵循 xeno-canto Creative Commons 授权协议使用。',
                   style: TextStyle(
                     fontSize: 12,
