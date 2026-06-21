@@ -224,8 +224,8 @@ class AlarmSoundService : Service() {
             }
             .setContentIntent(contentIntent)
             .apply {
-                // 只有"正在响铃"的通知才给 关闭 / 贪睡 按钮；
-                // "已启用/已守护"的常驻通知不放任何按钮（避免误点关掉守护）。
+                // 只有"正在响铃"的通知才给 关闭 / 贪睡 按钮，并在 Android 16 上提级为
+                // Live Update；"已启用/已守护"的常驻通知保持普通通知、不放任何按钮。
                 if (isRinging) {
                     addAction(android.R.drawable.ic_menu_close_clear_cancel, "关闭", stopIntent)
                     addAction(
@@ -233,9 +233,8 @@ class AlarmSoundService : Service() {
                         "贪睡 $SNOOZE_MINUTES 分钟",
                         snoozeIntent
                     )
+                    AlarmReceiver.requestPromotedOngoing(this)
                 }
-                // Android 16 (API 36) 上请求把响铃常驻通知提级为 Live Update。
-                AlarmReceiver.requestPromotedOngoing(this)
             }
             .build()
     }

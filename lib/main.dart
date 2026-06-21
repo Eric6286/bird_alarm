@@ -60,6 +60,9 @@ class BirdAlarmApp extends StatelessWidget {
 
 enum BirdLibraryFilter { all, downloaded, notDownloaded }
 
+/// 闹钟的重复规则：自定义星期 / 中国工作日 / 中国法定节假日。
+enum RepeatRule { weekdays, chinaWorkdays, chinaHolidays }
+
 class BirdSound {
   final String id;
   final String cnName;
@@ -136,7 +139,7 @@ class BirdAlarm {
   final String id;
   final TimeOfDay time;
   final Set<int> repeatDays;
-  final bool useChinaWorkdays;
+  final RepeatRule repeatRule;
   final bool enabled;
   final String label;
 
@@ -144,7 +147,7 @@ class BirdAlarm {
     required this.id,
     required this.time,
     required this.repeatDays,
-    required this.useChinaWorkdays,
+    required this.repeatRule,
     required this.enabled,
     required this.label,
   });
@@ -152,17 +155,32 @@ class BirdAlarm {
   BirdAlarm copyWith({
     TimeOfDay? time,
     Set<int>? repeatDays,
-    bool? useChinaWorkdays,
+    RepeatRule? repeatRule,
     bool? enabled,
     String? label,
   }) => BirdAlarm(
     id: id,
     time: time ?? this.time,
     repeatDays: repeatDays ?? this.repeatDays,
-    useChinaWorkdays: useChinaWorkdays ?? this.useChinaWorkdays,
+    repeatRule: repeatRule ?? this.repeatRule,
     enabled: enabled ?? this.enabled,
     label: label ?? this.label,
   );
+
+  static RepeatRule _parseRepeatRule(Map<String, dynamic> json) {
+    switch (json['repeatRule'] as String?) {
+      case 'chinaWorkdays':
+        return RepeatRule.chinaWorkdays;
+      case 'chinaHolidays':
+        return RepeatRule.chinaHolidays;
+      case 'weekdays':
+        return RepeatRule.weekdays;
+    }
+    // 兼容旧数据：以前只有 useChinaWorkdays 布尔字段。
+    return (json['useChinaWorkdays'] as bool? ?? false)
+        ? RepeatRule.chinaWorkdays
+        : RepeatRule.weekdays;
+  }
 
   factory BirdAlarm.fromJson(Map<String, dynamic> json) => BirdAlarm(
     id: json['id'] as String,
@@ -174,7 +192,7 @@ class BirdAlarm {
         ((json['repeatDays'] as List<dynamic>?) ?? const [])
             .map((day) => day as int)
             .toSet(),
-    useChinaWorkdays: json['useChinaWorkdays'] as bool? ?? false,
+    repeatRule: _parseRepeatRule(json),
     enabled: json['enabled'] as bool? ?? true,
     label: json['label'] as String? ?? '晨间鸟鸣',
   );
@@ -184,7 +202,7 @@ class BirdAlarm {
     'hour': time.hour,
     'minute': time.minute,
     'repeatDays': repeatDays.toList()..sort(),
-    'useChinaWorkdays': useChinaWorkdays,
+    'repeatRule': repeatRule.name,
     'enabled': enabled,
     'label': label,
   };
@@ -350,7 +368,7 @@ class _AlarmHomePageState extends State<AlarmHomePage>
             id: DateTime.now().microsecondsSinceEpoch.toString(),
             time: const TimeOfDay(hour: 7, minute: 30),
             repeatDays: {1, 2, 3, 4, 5},
-            useChinaWorkdays: false,
+            repeatRule: RepeatRule.weekdays,
             enabled: true,
             label: '工作日鸟鸣',
           ),
@@ -943,10 +961,15 @@ class _AlarmHomePageState extends State<AlarmHomePage>
   }
 
   bool _alarmRunsOnDate(BirdAlarm alarm, DateTime date) {
-    if (alarm.useChinaWorkdays) {
-      return ChinaWorkdayCalendar.isWorkday(date);
+    switch (alarm.repeatRule) {
+      case RepeatRule.chinaWorkdays:
+        return ChinaWorkdayCalendar.isWorkday(date);
+      case RepeatRule.chinaHolidays:
+        return ChinaWorkdayCalendar.isHoliday(date);
+      case RepeatRule.weekdays:
+        return alarm.repeatDays.isEmpty ||
+            alarm.repeatDays.contains(date.weekday);
     }
-    return alarm.repeatDays.isEmpty || alarm.repeatDays.contains(date.weekday);
   }
 }
 
@@ -1008,7 +1031,7 @@ class AlarmEditor extends StatefulWidget {
 class _AlarmEditorState extends State<AlarmEditor> {
   late TimeOfDay _time;
   late Set<int> _days;
-  late bool _useChinaWorkdays;
+  late RepeatRule _rule;
   late TextEditingController _labelController;
 
   @override
@@ -1016,7 +1039,7 @@ class _AlarmEditorState extends State<AlarmEditor> {
     super.initState();
     _time = widget.alarm?.time ?? TimeOfDay.now();
     _days = {...?widget.alarm?.repeatDays};
-    _useChinaWorkdays = widget.alarm?.useChinaWorkdays ?? false;
+    _rule = widget.alarm?.repeatRule ?? RepeatRule.weekdays;
     _labelController = TextEditingController(
       text: widget.alarm?.label ?? '鸟鸣唤醒',
     );
@@ -1062,37 +1085,59 @@ class _AlarmEditorState extends State<AlarmEditor> {
               decoration: const InputDecoration(labelText: '标签'),
             ),
             const SizedBox(height: 16),
-            SwitchListTile(
-              contentPadding: EdgeInsets.zero,
-              secondary: const Icon(Icons.work_history_outlined),
-              title: const Text('按中国工作日响铃'),
-              subtitle: const Text('跳过 2026 法定节假日，包含调休上班日'),
-              value: _useChinaWorkdays,
-              onChanged: (value) => setState(() => _useChinaWorkdays = value),
-            ),
-            Wrap(
-              spacing: 8,
-              children: [
-                for (var day = 1; day <= 7; day++)
-                  FilterChip(
-                    label: Text(_weekdayLabel(day)),
-                    selected: !_useChinaWorkdays && _days.contains(day),
-                    showCheckmark: !_useChinaWorkdays,
-                    avatar:
-                        _useChinaWorkdays
-                            ? const Icon(Icons.lock_outline, size: 16)
-                            : null,
-                    disabledColor: Theme.of(context).disabledColor,
-                    surfaceTintColor: Colors.transparent,
-                    onSelected: (selected) {
-                      if (_useChinaWorkdays) return;
-                      setState(() {
-                        selected ? _days.add(day) : _days.remove(day);
-                      });
-                    },
+            const Text('重复'),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: SegmentedButton<RepeatRule>(
+                showSelectedIcon: false,
+                segments: const [
+                  ButtonSegment(value: RepeatRule.weekdays, label: Text('自定义')),
+                  ButtonSegment(
+                    value: RepeatRule.chinaWorkdays,
+                    label: Text('工作日'),
                   ),
-              ],
+                  ButtonSegment(
+                    value: RepeatRule.chinaHolidays,
+                    label: Text('节假日'),
+                  ),
+                ],
+                selected: {_rule},
+                onSelectionChanged:
+                    (value) => setState(() => _rule = value.first),
+              ),
             ),
+            const SizedBox(height: 12),
+            if (_rule == RepeatRule.weekdays)
+              Wrap(
+                spacing: 8,
+                children: [
+                  for (var day = 1; day <= 7; day++)
+                    FilterChip(
+                      label: Text(_weekdayLabel(day)),
+                      selected: _days.contains(day),
+                      surfaceTintColor: Colors.transparent,
+                      onSelected: (selected) {
+                        setState(() {
+                          selected ? _days.add(day) : _days.remove(day);
+                        });
+                      },
+                    ),
+                ],
+              )
+            else
+              Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: Text(
+                  _rule == RepeatRule.chinaWorkdays
+                      ? '仅工作日响铃：跳过 2026 法定节假日，包含调休补班日。'
+                      : '仅法定节假日响铃：只在 2026 放假日响铃（不含调休补班日）。',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
             const SizedBox(height: 20),
             FilledButton.icon(
               onPressed: () {
@@ -1103,7 +1148,7 @@ class _AlarmEditorState extends State<AlarmEditor> {
                         DateTime.now().microsecondsSinceEpoch.toString(),
                     time: _time,
                     repeatDays: _days,
-                    useChinaWorkdays: _useChinaWorkdays,
+                    repeatRule: _rule,
                     enabled: widget.alarm?.enabled ?? true,
                     label:
                         _labelController.text.trim().isEmpty
@@ -2097,11 +2142,17 @@ String _weekdayLabel(int day) {
 }
 
 String _repeatText(BirdAlarm alarm) {
-  if (alarm.useChinaWorkdays) return '中国工作日';
-  final days = alarm.repeatDays;
-  if (days.isEmpty) return '仅一次';
-  if (days.length == 7) return '每天';
-  return days.map(_weekdayLabel).join(' ');
+  switch (alarm.repeatRule) {
+    case RepeatRule.chinaWorkdays:
+      return '中国工作日';
+    case RepeatRule.chinaHolidays:
+      return '中国法定节假日';
+    case RepeatRule.weekdays:
+      final days = alarm.repeatDays;
+      if (days.isEmpty) return '仅一次';
+      if (days.length == 7) return '每天';
+      return days.map(_weekdayLabel).join(' ');
+  }
 }
 
 String _safeFileName(String value) {
@@ -2168,6 +2219,13 @@ class ChinaWorkdayCalendar {
     if (_adjustedWorkDates2026.contains(key)) return true;
     if (_holidayDates2026.contains(key)) return false;
     return date.weekday >= DateTime.monday && date.weekday <= DateTime.friday;
+  }
+
+  // 是否为中国法定节假日（放假日）。调休补班日不算节假日。
+  static bool isHoliday(DateTime date) {
+    final key = _dateKey(date);
+    if (_adjustedWorkDates2026.contains(key)) return false;
+    return _holidayDates2026.contains(key);
   }
 
   static String _dateKey(DateTime date) {
