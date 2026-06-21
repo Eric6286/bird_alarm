@@ -456,11 +456,13 @@ class _AlarmHomePageState extends State<AlarmHomePage>
     bool useNativeAudio = false,
   }) async {
     _lastTriggeredMinute = _minuteStamp(DateTime.now());
+    // 原生回报的可能是内置 asset 路径，也可能是下载文件的绝对路径，两者都要能对上鸟卡。
     final sound =
         assetPath == null
             ? _library[_random.nextInt(_library.length)]
             : _library.firstWhere(
-              (sound) => sound.assetPath == assetPath,
+              (sound) =>
+                  sound.assetPath == assetPath || sound.localPath == assetPath,
               orElse: () => _library[_random.nextInt(_library.length)],
             );
     await _prepareAlarmWindow();
@@ -581,16 +583,35 @@ class _AlarmHomePageState extends State<AlarmHomePage>
         if (Platform.isIOS) {
           await _systemAlarmChannel.invokeMethod<void>('requestAlarmPermissions');
         }
-        final sound = _library[_random.nextInt(_library.length)];
+        // 把整库里"能离线播放的鸟鸣"（内置 asset + 下载到本机的文件）下发给原生，
+        // 由原生在响铃那一刻随机选；这样下载的鸟鸣才会真正进入抽取池。
+        final pool = _nativeSoundPool();
         await _systemAlarmChannel.invokeMethod<void>('scheduleAlarmAt', {
           'triggerAtMillis': next.millisecondsSinceEpoch,
           'label': '鸟瘾闹钟',
-          'assetPath': sound.assetPath,
+          'soundPaths': pool.map((entry) => entry.key).toList(),
+          'soundNames': {for (final entry in pool) entry.key: entry.value},
         });
       }
     } catch (_) {
       // The foreground timer still works if the platform channel is unavailable.
     }
+  }
+
+  // 原生响铃可离线播放的音库：内置 asset 用完整 flutter_assets 路径，下载/本地文件用绝对路径。
+  // 返回 (原生引用路径 → 中文鸟名)，原生据此随机选鸟并在响铃通知里显示正确鸟名。
+  List<MapEntry<String, String>> _nativeSoundPool() {
+    final pool = <MapEntry<String, String>>[];
+    for (final sound in _library) {
+      final ref =
+          sound.localPath ??
+          (sound.assetPath != null
+              ? 'flutter_assets/assets/${sound.assetPath}'
+              : null);
+      if (ref == null) continue;
+      pool.add(MapEntry(ref, sound.cnName));
+    }
+    return pool;
   }
 
   Future<void> _requestAlarmPermissions() async {
@@ -1962,7 +1983,11 @@ class _LibraryPanel extends StatelessWidget {
         const SizedBox(height: 4),
         const Text('有播放按钮的条目会被闹钟随机抽取；下载后的 xeno-canto 鸟鸣可离线播放。'),
         const SizedBox(height: 8),
-        for (final sound in library.take(12))
+        // 下载/自定义的鸟鸣排在内置前面，且不截断，确保下载后一定能在音库里看到。
+        for (final sound in [
+          ...library.where((sound) => !sound.id.startsWith('starter-')),
+          ...library.where((sound) => sound.id.startsWith('starter-')),
+        ])
           ListTile(
             dense: true,
             leading: Icon(

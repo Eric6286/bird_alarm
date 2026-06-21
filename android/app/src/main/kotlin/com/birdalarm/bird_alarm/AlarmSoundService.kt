@@ -145,7 +145,7 @@ class AlarmSoundService : Service() {
 
     private fun currentBirdName(): String {
         val prefs = getSharedPreferences("bird_alarm_native", Context.MODE_PRIVATE)
-        return BirdAlarmAssets.cnNameFor(prefs.getString("ringing_asset", null))
+        return BirdAlarmAssets.cnNameFor(this, prefs.getString("ringing_asset", null))
     }
 
     private fun buildNotification(

@@ -1,5 +1,7 @@
 package com.birdalarm.bird_alarm
 
+import android.content.Context
+
 object BirdAlarmAssets {
     val sounds = listOf(
         "flutter_assets/assets/sounds/cuculus_micropterus.m4a",
@@ -14,8 +16,9 @@ object BirdAlarmAssets {
         "flutter_assets/assets/sounds/eudynamys_scolopaceus.m4a"
     )
 
-    // asset 路径 → 中文鸟名，与 Flutter 侧 _starterLibrary 保持一致。
-    // 锁屏响铃实际只会播放这 10 个内置鸟鸣，所以这份映射足以告诉用户"正在叫的是什么鸟"。
+    // 内置 asset 文件名 → 中文鸟名，与 Flutter 侧 _starterLibrary 保持一致。
+    // 内置鸟鸣的名字查这里；下载到本机的鸟鸣由 Flutter 通过 sound_names 映射下发，
+    // 见 cnNameFor()——所以响铃通知对下载的鸟鸣也能显示正确中文名。
     private val cnNames = mapOf(
         "cuculus_micropterus.m4a" to "四声杜鹃",
         "cuculus_canorus.m4a" to "大杜鹃",
@@ -29,8 +32,19 @@ object BirdAlarmAssets {
         "eudynamys_scolopaceus.m4a" to "噪鹃"
     )
 
-    fun cnNameFor(assetPath: String?): String {
+    fun cnNameFor(context: Context, assetPath: String?): String {
         if (assetPath.isNullOrEmpty()) return "鸟鸣"
+        // 下载的鸟鸣文件名不在内置映射里，先查 Flutter 下发的"路径→中文名"映射。
+        try {
+            val raw = context
+                .getSharedPreferences("bird_alarm_native", Context.MODE_PRIVATE)
+                .getString("sound_names", null)
+            if (!raw.isNullOrEmpty()) {
+                val name = org.json.JSONObject(raw).optString(assetPath)
+                if (name.isNotEmpty()) return name
+            }
+        } catch (_: Exception) {
+        }
         val fileName = assetPath.substringAfterLast('/')
         return cnNames[fileName] ?: "鸟鸣"
     }
