@@ -26,6 +26,8 @@ class BirdAlarmApp extends StatelessWidget {
     return MaterialApp(
       title: '鸟瘾闹钟',
       debugShowCheckedModeBanner: false,
+      // 跟随系统深浅色；浅色保留原有奶油观感，深色用 M3 自动配色。
+      themeMode: ThemeMode.system,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(
           seedColor: const Color(0xFF1D7C76),
@@ -33,8 +35,20 @@ class BirdAlarmApp extends StatelessWidget {
         ),
         useMaterial3: true,
         scaffoldBackgroundColor: const Color(0xFFFFF5DF),
-        cardTheme: CardTheme(
+        appBarTheme: const AppBarTheme(backgroundColor: Color(0xFFFFF5DF)),
+        cardTheme: CardThemeData(
           color: Colors.white,
+          elevation: 0,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+        ),
+      ),
+      darkTheme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: const Color(0xFF1D7C76),
+          brightness: Brightness.dark,
+        ),
+        useMaterial3: true,
+        cardTheme: CardThemeData(
           elevation: 0,
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
         ),
@@ -44,9 +58,10 @@ class BirdAlarmApp extends StatelessWidget {
   }
 }
 
-enum AlarmMode { normal, awakeChallenge }
-
 enum BirdLibraryFilter { all, downloaded, notDownloaded }
+
+/// 闹钟的重复规则：自定义星期 / 中国工作日 / 中国法定节假日。
+enum RepeatRule { weekdays, chinaWorkdays, chinaHolidays }
 
 class BirdSound {
   final String id;
@@ -124,8 +139,7 @@ class BirdAlarm {
   final String id;
   final TimeOfDay time;
   final Set<int> repeatDays;
-  final bool useChinaWorkdays;
-  final AlarmMode mode;
+  final RepeatRule repeatRule;
   final bool enabled;
   final String label;
 
@@ -133,8 +147,7 @@ class BirdAlarm {
     required this.id,
     required this.time,
     required this.repeatDays,
-    required this.useChinaWorkdays,
-    required this.mode,
+    required this.repeatRule,
     required this.enabled,
     required this.label,
   });
@@ -142,19 +155,32 @@ class BirdAlarm {
   BirdAlarm copyWith({
     TimeOfDay? time,
     Set<int>? repeatDays,
-    bool? useChinaWorkdays,
-    AlarmMode? mode,
+    RepeatRule? repeatRule,
     bool? enabled,
     String? label,
   }) => BirdAlarm(
     id: id,
     time: time ?? this.time,
     repeatDays: repeatDays ?? this.repeatDays,
-    useChinaWorkdays: useChinaWorkdays ?? this.useChinaWorkdays,
-    mode: mode ?? this.mode,
+    repeatRule: repeatRule ?? this.repeatRule,
     enabled: enabled ?? this.enabled,
     label: label ?? this.label,
   );
+
+  static RepeatRule _parseRepeatRule(Map<String, dynamic> json) {
+    switch (json['repeatRule'] as String?) {
+      case 'chinaWorkdays':
+        return RepeatRule.chinaWorkdays;
+      case 'chinaHolidays':
+        return RepeatRule.chinaHolidays;
+      case 'weekdays':
+        return RepeatRule.weekdays;
+    }
+    // 兼容旧数据：以前只有 useChinaWorkdays 布尔字段。
+    return (json['useChinaWorkdays'] as bool? ?? false)
+        ? RepeatRule.chinaWorkdays
+        : RepeatRule.weekdays;
+  }
 
   factory BirdAlarm.fromJson(Map<String, dynamic> json) => BirdAlarm(
     id: json['id'] as String,
@@ -166,11 +192,7 @@ class BirdAlarm {
         ((json['repeatDays'] as List<dynamic>?) ?? const [])
             .map((day) => day as int)
             .toSet(),
-    useChinaWorkdays: json['useChinaWorkdays'] as bool? ?? false,
-    mode:
-        (json['mode'] as String?) == 'awakeChallenge'
-            ? AlarmMode.awakeChallenge
-            : AlarmMode.normal,
+    repeatRule: _parseRepeatRule(json),
     enabled: json['enabled'] as bool? ?? true,
     label: json['label'] as String? ?? '晨间鸟鸣',
   );
@@ -180,8 +202,7 @@ class BirdAlarm {
     'hour': time.hour,
     'minute': time.minute,
     'repeatDays': repeatDays.toList()..sort(),
-    'useChinaWorkdays': useChinaWorkdays,
-    'mode': mode.name,
+    'repeatRule': repeatRule.name,
     'enabled': enabled,
     'label': label,
   };
@@ -327,6 +348,13 @@ class _AlarmHomePageState extends State<AlarmHomePage>
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _handleAlarmLaunch();
+    }
+  }
+
+  @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _ticker?.cancel();
@@ -337,18 +365,12 @@ class _AlarmHomePageState extends State<AlarmHomePage>
     super.dispose();
   }
 
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
-      _handleAlarmLaunch();
-    }
-  }
-
   Future<void> _load() async {
     final prefs = await SharedPreferences.getInstance();
     final alarmRaw = prefs.getString(_alarmsKey);
     final libraryRaw = prefs.getString(_libraryKey);
     await _loadNameIndex();
+    await ChinaHolidayData.loadCache();
     _apiKeyController.text =
         prefs.getString(_xenoApiKeyKey) ?? _apiKeyController.text;
     setState(() {
@@ -363,10 +385,9 @@ class _AlarmHomePageState extends State<AlarmHomePage>
             id: DateTime.now().microsecondsSinceEpoch.toString(),
             time: const TimeOfDay(hour: 7, minute: 30),
             repeatDays: {1, 2, 3, 4, 5},
-            useChinaWorkdays: false,
-            mode: AlarmMode.awakeChallenge,
+            repeatRule: RepeatRule.weekdays,
             enabled: true,
-            label: '工作日鸟鸣挑战',
+            label: '工作日鸟鸣',
           ),
         ];
       }
@@ -382,6 +403,10 @@ class _AlarmHomePageState extends State<AlarmHomePage>
     _loaded = true;
     await _syncSystemAlarm();
     await _handleAlarmLaunch();
+    // 后台拉取最新中国节假日数据；有更新则按新数据重排闹钟。
+    ChinaHolidayData.refresh().then((changed) {
+      if (changed && mounted) _syncSystemAlarm();
+    });
   }
 
   Future<void> _handleAlarmLaunch() async {
@@ -393,17 +418,125 @@ class _AlarmHomePageState extends State<AlarmHomePage>
             'consumeLaunchAlarm',
           ) ??
           const {};
-      final launchedByAlarm = launch['launched'] == true;
-      if (launchedByAlarm) {
+      if (launch['launched'] == true) {
         await _ringNextEnabledAlarm(
           assetPath: launch['assetPath'] as String?,
           useNativeAudio: true,
         );
       }
     } catch (_) {
-      // The foreground timer still covers alarms while the app is already open.
+      // 前台计时器在 app 已打开时仍能兜底响铃。
     } finally {
       _checkingAlarmLaunch = false;
+    }
+  }
+
+  void _checkAlarms() {
+    if (_activeAlarm != null) return;
+    final now = DateTime.now();
+    final minuteStamp = _minuteStamp(now);
+    if (_lastTriggeredMinute == minuteStamp) return;
+    for (final alarm in _alarms.where((alarm) => alarm.enabled)) {
+      if (alarm.time.hour != now.hour || alarm.time.minute != now.minute) {
+        continue;
+      }
+      if (!_alarmRunsOnDate(alarm, now)) continue;
+      _lastTriggeredMinute = minuteStamp;
+      _ring(alarm);
+      break;
+    }
+  }
+
+  DateTime _minuteStamp(DateTime value) =>
+      DateTime(value.year, value.month, value.day, value.hour, value.minute);
+
+  Future<void> _ring(
+    BirdAlarm alarm, {
+    String? assetPath,
+    bool useNativeAudio = false,
+  }) async {
+    _lastTriggeredMinute = _minuteStamp(DateTime.now());
+    final sound =
+        assetPath == null
+            ? _library[_random.nextInt(_library.length)]
+            : _library.firstWhere(
+              (sound) => sound.assetPath == assetPath,
+              orElse: () => _library[_random.nextInt(_library.length)],
+            );
+    await _prepareAlarmWindow();
+    setState(() {
+      _previewingSoundId = null;
+      _activeAlarm = ActiveAlarm(alarm: alarm, sound: sound);
+    });
+    if (!useNativeAudio) {
+      await _playSound(sound);
+    }
+  }
+
+  Future<void> _ringNextEnabledAlarm({
+    String? assetPath,
+    bool useNativeAudio = false,
+  }) async {
+    if (_activeAlarm != null) return;
+    final enabled = _alarms.where((alarm) => alarm.enabled).toList();
+    if (enabled.isEmpty) return;
+    final now = DateTime.now();
+    final dueNow = enabled.where((alarm) {
+      return alarm.time.hour == now.hour &&
+          alarm.time.minute == now.minute &&
+          _alarmRunsOnDate(alarm, now);
+    }).toList();
+    final candidates = dueNow.isNotEmpty ? dueNow : enabled;
+    candidates.sort((a, b) => _minutesUntil(a).compareTo(_minutesUntil(b)));
+    await _ring(
+      candidates.first,
+      assetPath: assetPath,
+      useNativeAudio: useNativeAudio,
+    );
+  }
+
+  Future<void> _prepareAlarmWindow() async {
+    if (!Platform.isAndroid) return;
+    try {
+      await _systemAlarmChannel.invokeMethod<void>('prepareAlarmWindow');
+    } catch (_) {
+      // 平台窗口标志不可用时，闹钟仍能响铃。
+    }
+  }
+
+  Future<void> _dismissAlarm() async {
+    if (_activeAlarm == null) return;
+    await _player.stop();
+    await _stopNativeAlarmSound();
+    setState(() {
+      _activeAlarm = null;
+      _previewingSoundId = null;
+    });
+    await _syncSystemAlarm();
+  }
+
+  Future<void> _snoozeAlarm() async {
+    if (_activeAlarm == null) return;
+    await _player.stop();
+    if (Platform.isAndroid) {
+      try {
+        await _systemAlarmChannel.invokeMethod<void>('snoozeAlarm');
+      } catch (_) {
+        // 平台通道不可用时忽略。
+      }
+    }
+    setState(() {
+      _activeAlarm = null;
+      _previewingSoundId = null;
+    });
+  }
+
+  Future<void> _stopNativeAlarmSound() async {
+    if (!Platform.isAndroid && !Platform.isIOS) return;
+    try {
+      await _systemAlarmChannel.invokeMethod<void>('stopAlarmSound');
+    } catch (_) {
+      // Flutter 音频已停；原生服务可能未在运行。
     }
   }
 
@@ -460,57 +593,6 @@ class _AlarmHomePageState extends State<AlarmHomePage>
     }
   }
 
-  void _checkAlarms() {
-    if (_activeAlarm != null) return;
-    final now = DateTime.now();
-    final minuteStamp = _minuteStamp(now);
-    if (_lastTriggeredMinute == minuteStamp) return;
-    for (final alarm in _alarms.where((alarm) => alarm.enabled)) {
-      if (alarm.time.hour != now.hour || alarm.time.minute != now.minute) {
-        continue;
-      }
-      if (!_alarmRunsOnDate(alarm, now)) {
-        continue;
-      }
-      _lastTriggeredMinute = minuteStamp;
-      _ring(alarm);
-      break;
-    }
-  }
-
-  Future<void> _ring(
-    BirdAlarm alarm, {
-    String? assetPath,
-    bool useNativeAudio = false,
-  }) async {
-    _lastTriggeredMinute = _minuteStamp(DateTime.now());
-    final sound =
-        assetPath == null
-            ? _library[_random.nextInt(_library.length)]
-            : _library.firstWhere(
-              (sound) => sound.assetPath == assetPath,
-              orElse: () => _library[_random.nextInt(_library.length)],
-            );
-    final options = _makeOptions(sound);
-    await _prepareAlarmWindow();
-    setState(() {
-      _previewingSoundId = null;
-      _activeAlarm = ActiveAlarm(alarm: alarm, sound: sound, options: options);
-    });
-    if (!useNativeAudio) {
-      await _playSound(sound);
-    }
-  }
-
-  Future<void> _prepareAlarmWindow() async {
-    if (!Platform.isAndroid) return;
-    try {
-      await _systemAlarmChannel.invokeMethod<void>('prepareAlarmWindow');
-    } catch (_) {
-      // The alarm can still ring if the platform window flags are unavailable.
-    }
-  }
-
   Future<void> _requestAlarmPermissions() async {
     if (!Platform.isAndroid) return;
     try {
@@ -521,10 +603,7 @@ class _AlarmHomePageState extends State<AlarmHomePage>
   }
 
   Future<void> _testSystemAlarm() async {
-    if (!Platform.isAndroid) {
-      if (_alarms.isNotEmpty) await _ring(_alarms.first);
-      return;
-    }
+    if (!Platform.isAndroid) return;
     try {
       await _systemAlarmChannel.invokeMethod<void>('testSystemAlarm');
       if (mounted) {
@@ -533,39 +612,8 @@ class _AlarmHomePageState extends State<AlarmHomePage>
         ).showSnackBar(const SnackBar(content: Text('已安排 10 秒后的守护服务测试')));
       }
     } catch (_) {
-      if (_alarms.isNotEmpty) await _ring(_alarms.first);
+      // 平台通道不可用时忽略；真机上原生闹钟链路仍会按时响铃。
     }
-  }
-
-  Future<void> _ringNextEnabledAlarm({
-    String? assetPath,
-    bool useNativeAudio = false,
-  }) async {
-    if (_activeAlarm != null) return;
-    final enabled = _alarms.where((alarm) => alarm.enabled).toList();
-    if (enabled.isEmpty) return;
-    final now = DateTime.now();
-    final dueNow = enabled.where((alarm) {
-      return alarm.time.hour == now.hour &&
-          alarm.time.minute == now.minute &&
-          _alarmRunsOnDate(alarm, now);
-    }).toList();
-    final candidates = dueNow.isNotEmpty ? dueNow : enabled;
-    candidates.sort((a, b) => _minutesUntil(a).compareTo(_minutesUntil(b)));
-    await _ring(
-      candidates.first,
-      assetPath: assetPath,
-      useNativeAudio: useNativeAudio,
-    );
-  }
-
-  DateTime _minuteStamp(DateTime value) =>
-      DateTime(value.year, value.month, value.day, value.hour, value.minute);
-
-  List<BirdSound> _makeOptions(BirdSound answer) {
-    final pool =
-        _library.where((sound) => sound.id != answer.id).toList()..shuffle();
-    return ([answer, ...pool.take(3)]..shuffle()).toList();
   }
 
   Future<void> _playSound(BirdSound sound) async {
@@ -616,7 +664,7 @@ class _AlarmHomePageState extends State<AlarmHomePage>
     if (_activeAlarm != null) {
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(const SnackBar(content: Text('闹钟响铃中，先完成唤醒挑战。')));
+      ).showSnackBar(const SnackBar(content: Text('闹钟响铃中，先关闭闹钟。')));
       return;
     }
     if (_previewingSoundId == sound.id) {
@@ -626,27 +674,6 @@ class _AlarmHomePageState extends State<AlarmHomePage>
     }
     await _playSound(sound);
     if (mounted) setState(() => _previewingSoundId = sound.id);
-  }
-
-  Future<void> _dismissAlarm({required bool force}) async {
-    if (_activeAlarm == null) return;
-    if (!force && _activeAlarm!.alarm.mode == AlarmMode.awakeChallenge) return;
-    await _player.stop();
-    await _stopNativeAlarmSound();
-    setState(() {
-      _activeAlarm = null;
-      _previewingSoundId = null;
-    });
-    await _syncSystemAlarm();
-  }
-
-  Future<void> _stopNativeAlarmSound() async {
-    if (!Platform.isAndroid && !Platform.isIOS) return;
-    try {
-      await _systemAlarmChannel.invokeMethod<void>('stopAlarmSound');
-    } catch (_) {
-      // Flutter audio has already stopped; native service may not be running.
-    }
   }
 
   Future<void> _pickLocalAudio() async {
@@ -921,66 +948,26 @@ class _AlarmHomePageState extends State<AlarmHomePage>
   }
 
   Future<void> _showSettings() async {
-    final controller = TextEditingController(text: _apiKeyController.text);
-    final saved = await showModalBottomSheet<bool>(
+    final result = await showModalBottomSheet<String>(
       context: context,
       isScrollControlled: true,
-      builder: (context) {
-        return SafeArea(
-          child: Padding(
-            padding: EdgeInsets.fromLTRB(
-              20,
-              16,
-              20,
-              MediaQuery.of(context).viewInsets.bottom + 20,
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('设置', style: Theme.of(context).textTheme.titleLarge),
-                const SizedBox(height: 16),
-                TextField(
-                  controller: controller,
-                  decoration: const InputDecoration(
-                    labelText: 'xeno-canto API Key',
-                    prefixIcon: Icon(Icons.key_outlined),
-                    helperText: '没有 Key 也可用，但请求次数有限制',
-                    helperMaxLines: 2,
-                  ),
-                  obscureText: true,
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  '前往 xeno-canto.org 注册账户，在个人页面获取免费 API Key，填入后可提升搜索请求额度。',
-                  style: TextStyle(fontSize: 12, color: Colors.grey[600]),
-                ),
-                const SizedBox(height: 16),
-                FilledButton.icon(
-                  onPressed: () => Navigator.of(context).pop(true),
-                  icon: const Icon(Icons.check),
-                  label: const Text('保存'),
-                ),
-              ],
-            ),
-          ),
-        );
-      },
+      builder: (context) => _SettingsSheet(initialApiKey: _apiKeyController.text),
     );
-    if (saved == true) {
-      _apiKeyController.text = controller.text.trim();
+    if (result != null) {
+      _apiKeyController.text = result;
       await _save();
     }
-    controller.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     final active = _activeAlarm;
-    return Scaffold(
+    return Stack(
+      textDirection: TextDirection.ltr,
+      children: [
+        Scaffold(
       appBar: AppBar(
         title: const Text('鸟瘾闹钟'),
-        backgroundColor: const Color(0xFFFFF5DF),
         actions: [
           IconButton(
             tooltip: '测试系统闹钟',
@@ -1081,22 +1068,18 @@ class _AlarmHomePageState extends State<AlarmHomePage>
               const _AboutPage(),
             ],
           ),
-          if (active != null)
-            AlarmOverlay(
-              active: active,
-              onNormalDismiss: () => _dismissAlarm(force: true),
-              onAnswer: (sound) {
-                if (sound.id == active.sound.id) {
-                  _dismissAlarm(force: true);
-                } else {
-                  ScaffoldMessenger.of(
-                    context,
-                  ).showSnackBar(const SnackBar(content: Text('还没醒透，再听一次。')));
-                }
-              },
-            ),
         ],
       ),
+    ),
+        if (active != null)
+          Positioned.fill(
+            child: AlarmOverlay(
+              active: active,
+              onDismiss: _dismissAlarm,
+              onSnooze: _snoozeAlarm,
+            ),
+          ),
+      ],
     );
   }
 
@@ -1152,23 +1135,16 @@ class _AlarmHomePageState extends State<AlarmHomePage>
   }
 
   bool _alarmRunsOnDate(BirdAlarm alarm, DateTime date) {
-    if (alarm.useChinaWorkdays) {
-      return ChinaWorkdayCalendar.isWorkday(date);
+    switch (alarm.repeatRule) {
+      case RepeatRule.chinaWorkdays:
+        return ChinaWorkdayCalendar.isWorkday(date);
+      case RepeatRule.chinaHolidays:
+        return ChinaWorkdayCalendar.isHoliday(date);
+      case RepeatRule.weekdays:
+        return alarm.repeatDays.isEmpty ||
+            alarm.repeatDays.contains(date.weekday);
     }
-    return alarm.repeatDays.isEmpty || alarm.repeatDays.contains(date.weekday);
   }
-}
-
-class ActiveAlarm {
-  final BirdAlarm alarm;
-  final BirdSound sound;
-  final List<BirdSound> options;
-
-  const ActiveAlarm({
-    required this.alarm,
-    required this.sound,
-    required this.options,
-  });
 }
 
 class _AlarmTab extends StatelessWidget {
@@ -1229,8 +1205,7 @@ class AlarmEditor extends StatefulWidget {
 class _AlarmEditorState extends State<AlarmEditor> {
   late TimeOfDay _time;
   late Set<int> _days;
-  late bool _useChinaWorkdays;
-  late AlarmMode _mode;
+  late RepeatRule _rule;
   late TextEditingController _labelController;
 
   @override
@@ -1238,8 +1213,7 @@ class _AlarmEditorState extends State<AlarmEditor> {
     super.initState();
     _time = widget.alarm?.time ?? TimeOfDay.now();
     _days = {...?widget.alarm?.repeatDays};
-    _useChinaWorkdays = widget.alarm?.useChinaWorkdays ?? false;
-    _mode = widget.alarm?.mode ?? AlarmMode.awakeChallenge;
+    _rule = widget.alarm?.repeatRule ?? RepeatRule.weekdays;
     _labelController = TextEditingController(
       text: widget.alarm?.label ?? '鸟鸣唤醒',
     );
@@ -1285,55 +1259,59 @@ class _AlarmEditorState extends State<AlarmEditor> {
               decoration: const InputDecoration(labelText: '标签'),
             ),
             const SizedBox(height: 16),
-            SwitchListTile(
-              contentPadding: EdgeInsets.zero,
-              secondary: const Icon(Icons.work_history_outlined),
-              title: const Text('按中国工作日响铃'),
-              subtitle: const Text('跳过 2026 法定节假日，包含调休上班日'),
-              value: _useChinaWorkdays,
-              onChanged: (value) => setState(() => _useChinaWorkdays = value),
-            ),
-            Wrap(
-              spacing: 8,
-              children: [
-                for (var day = 1; day <= 7; day++)
-                  FilterChip(
-                    label: Text(_weekdayLabel(day)),
-                    selected: !_useChinaWorkdays && _days.contains(day),
-                    showCheckmark: !_useChinaWorkdays,
-                    avatar:
-                        _useChinaWorkdays
-                            ? const Icon(Icons.lock_outline, size: 16)
-                            : null,
-                    disabledColor: Colors.black12,
-                    surfaceTintColor: Colors.transparent,
-                    onSelected: (selected) {
-                      if (_useChinaWorkdays) return;
-                      setState(() {
-                        selected ? _days.add(day) : _days.remove(day);
-                      });
-                    },
+            const Text('重复'),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: SegmentedButton<RepeatRule>(
+                showSelectedIcon: false,
+                segments: const [
+                  ButtonSegment(value: RepeatRule.weekdays, label: Text('自定义')),
+                  ButtonSegment(
+                    value: RepeatRule.chinaWorkdays,
+                    label: Text('工作日'),
                   ),
-              ],
+                  ButtonSegment(
+                    value: RepeatRule.chinaHolidays,
+                    label: Text('节假日'),
+                  ),
+                ],
+                selected: {_rule},
+                onSelectionChanged:
+                    (value) => setState(() => _rule = value.first),
+              ),
             ),
-            const SizedBox(height: 16),
-            SegmentedButton<AlarmMode>(
-              segments: const [
-                ButtonSegment(
-                  value: AlarmMode.normal,
-                  label: Text('普通模式'),
-                  icon: Icon(Icons.volume_up_outlined),
+            const SizedBox(height: 12),
+            if (_rule == RepeatRule.weekdays)
+              Wrap(
+                spacing: 8,
+                children: [
+                  for (var day = 1; day <= 7; day++)
+                    FilterChip(
+                      label: Text(_weekdayLabel(day)),
+                      selected: _days.contains(day),
+                      surfaceTintColor: Colors.transparent,
+                      onSelected: (selected) {
+                        setState(() {
+                          selected ? _days.add(day) : _days.remove(day);
+                        });
+                      },
+                    ),
+                ],
+              )
+            else
+              Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: Text(
+                  _rule == RepeatRule.chinaWorkdays
+                      ? '仅工作日响铃：跳过 2026 法定节假日，包含调休补班日。'
+                      : '仅法定节假日响铃：只在 2026 放假日响铃（不含调休补班日）。',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
                 ),
-                ButtonSegment(
-                  value: AlarmMode.awakeChallenge,
-                  label: Text('强制认鸟'),
-                  icon: Icon(Icons.quiz_outlined),
-                ),
-              ],
-              selected: {_mode},
-              onSelectionChanged:
-                  (value) => setState(() => _mode = value.first),
-            ),
+              ),
             const SizedBox(height: 20),
             FilledButton.icon(
               onPressed: () {
@@ -1344,8 +1322,7 @@ class _AlarmEditorState extends State<AlarmEditor> {
                         DateTime.now().microsecondsSinceEpoch.toString(),
                     time: _time,
                     repeatDays: _days,
-                    useChinaWorkdays: _useChinaWorkdays,
-                    mode: _mode,
+                    repeatRule: _rule,
                     enabled: widget.alarm?.enabled ?? true,
                     label:
                         _labelController.text.trim().isEmpty
@@ -1508,9 +1485,17 @@ class _BirdSpeechPanel extends StatelessWidget {
         children: [
           Row(
             children: [
-              const Icon(Icons.record_voice_over_outlined),
+              const Icon(
+                Icons.record_voice_over_outlined,
+                color: Color(0xFF164A45),
+              ),
               const SizedBox(width: 8),
-              Text('报时鸟正在值班', style: Theme.of(context).textTheme.titleMedium),
+              Text(
+                '报时鸟正在值班',
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  color: const Color(0xFF164A45),
+                ),
+              ),
             ],
           ),
           const SizedBox(height: 10),
@@ -1526,16 +1511,25 @@ class _BirdSpeechPanel extends StatelessWidget {
           Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Icon(Icons.alarm_on_outlined, size: 20),
+              const Icon(
+                Icons.alarm_on_outlined,
+                size: 20,
+                color: Color(0xFF164A45),
+              ),
               const SizedBox(width: 8),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text('下一次唤醒'),
+                    const Text(
+                      '下一次唤醒',
+                      style: TextStyle(color: Color(0xFF3C5A54)),
+                    ),
                     Text(
                       nextAlarm,
-                      style: Theme.of(context).textTheme.titleMedium,
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        color: const Color(0xFF164A45),
+                      ),
                     ),
                   ],
                 ),
@@ -1722,18 +1716,12 @@ class _AlarmTile extends StatelessWidget {
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
       child: ListTile(
         onTap: onTap,
-        leading: Icon(
-          alarm.mode == AlarmMode.awakeChallenge
-              ? Icons.quiz_outlined
-              : Icons.music_note_outlined,
-        ),
+        leading: const Icon(Icons.music_note_outlined),
         title: Text(
           alarm.time.format(context),
           style: Theme.of(context).textTheme.headlineSmall,
         ),
-        subtitle: Text(
-          '${alarm.label} · ${_repeatText(alarm)} · ${alarm.mode == AlarmMode.awakeChallenge ? '强制认鸟' : '普通模式'}',
-        ),
+        subtitle: Text('${alarm.label} · ${_repeatText(alarm)}'),
         trailing: Wrap(
           spacing: 2,
           crossAxisAlignment: WrapCrossAlignment.center,
@@ -1815,9 +1803,15 @@ class _LibraryPanel extends StatelessWidget {
         Container(
           padding: const EdgeInsets.all(14),
           decoration: BoxDecoration(
-            color: const Color(0xFFEAF6F2),
+            color: Theme.of(context).brightness == Brightness.light
+                ? const Color(0xFFEAF6F2)
+                : Theme.of(context).colorScheme.surfaceContainerHighest,
             borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: const Color(0xFFB7DCD4)),
+            border: Border.all(
+              color: Theme.of(context).brightness == Brightness.light
+                  ? const Color(0xFFB7DCD4)
+                  : Theme.of(context).colorScheme.outlineVariant,
+            ),
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -2092,9 +2086,15 @@ class _AboutPage extends StatelessWidget {
         Container(
           padding: const EdgeInsets.all(18),
           decoration: BoxDecoration(
-            color: const Color(0xFFEAF6F2),
+            color: Theme.of(context).brightness == Brightness.light
+                ? const Color(0xFFEAF6F2)
+                : Theme.of(context).colorScheme.surfaceContainerHighest,
             borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: const Color(0xFFB7DCD4)),
+            border: Border.all(
+              color: Theme.of(context).brightness == Brightness.light
+                  ? const Color(0xFFB7DCD4)
+                  : Theme.of(context).colorScheme.outlineVariant,
+            ),
           ),
           child: Row(
             children: [
@@ -2163,9 +2163,12 @@ class _AboutPage extends StatelessWidget {
                 const Text('绿啸冠鸫 · XC1088985', style: TextStyle(fontSize: 13)),
                 const Text('噪鹃 · XC1101779', style: TextStyle(fontSize: 13)),
                 const SizedBox(height: 8),
-                const Text(
+                Text(
                   '所有录音均遵循 xeno-canto Creative Commons 授权协议使用。',
-                  style: TextStyle(fontSize: 12, color: Colors.grey),
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
                 ),
               ],
             ),
@@ -2236,66 +2239,162 @@ class _SocialLinkTile extends StatelessWidget {
   }
 }
 
+class _SettingsSheet extends StatefulWidget {
+  final String initialApiKey;
+
+  const _SettingsSheet({required this.initialApiKey});
+
+  @override
+  State<_SettingsSheet> createState() => _SettingsSheetState();
+}
+
+class _SettingsSheetState extends State<_SettingsSheet> {
+  late final TextEditingController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: widget.initialApiKey);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: Padding(
+        padding: EdgeInsets.fromLTRB(
+          20,
+          16,
+          20,
+          MediaQuery.of(context).viewInsets.bottom + 20,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('设置', style: Theme.of(context).textTheme.titleLarge),
+            const SizedBox(height: 16),
+            TextField(
+              controller: _controller,
+              decoration: const InputDecoration(
+                labelText: 'xeno-canto API Key',
+                prefixIcon: Icon(Icons.key_outlined),
+                helperText: '没有 Key 也可用，但请求次数有限制',
+                helperMaxLines: 2,
+              ),
+              obscureText: true,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              '前往 xeno-canto.org 注册账户，在个人页面获取免费 API Key，填入后可提升搜索请求额度。',
+              style: TextStyle(
+                fontSize: 12,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: 16),
+            FilledButton.icon(
+              onPressed: () => Navigator.of(context).pop(_controller.text.trim()),
+              icon: const Icon(Icons.check),
+              label: const Text('保存'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class ActiveAlarm {
+  final BirdAlarm alarm;
+  final BirdSound sound;
+
+  const ActiveAlarm({required this.alarm, required this.sound});
+}
+
+/// 全屏响铃遮罩：铺满整个屏幕（盖住底部导航栏），显示正在叫的鸟 + 关闭 / 贪睡。
+/// 由 MainActivity 的 showWhenLocked 让它能显示在锁屏之上。
 class AlarmOverlay extends StatelessWidget {
   final ActiveAlarm active;
-  final VoidCallback onNormalDismiss;
-  final ValueChanged<BirdSound> onAnswer;
+  final VoidCallback onDismiss;
+  final VoidCallback onSnooze;
 
   const AlarmOverlay({
     super.key,
     required this.active,
-    required this.onNormalDismiss,
-    required this.onAnswer,
+    required this.onDismiss,
+    required this.onSnooze,
   });
 
   @override
   Widget build(BuildContext context) {
-    final challenge = active.alarm.mode == AlarmMode.awakeChallenge;
-    return Positioned.fill(
-      child: Material(
-        color: const Color(0xFFF2E8D5),
-        child: SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                const Icon(Icons.notifications_active, size: 64),
-                const SizedBox(height: 16),
-                Text(
-                  active.alarm.label,
-                  textAlign: TextAlign.center,
-                  style: Theme.of(context).textTheme.headlineMedium,
+    final theme = Theme.of(context);
+    final light = theme.brightness == Brightness.light;
+    return Material(
+      color: light ? const Color(0xFFFFF5DF) : theme.colorScheme.surface,
+      child: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(28, 24, 28, 28),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Spacer(),
+              Icon(
+                Icons.notifications_active,
+                size: 72,
+                color: theme.colorScheme.primary,
+              ),
+              const SizedBox(height: 20),
+              Text(
+                active.alarm.label,
+                textAlign: TextAlign.center,
+                style: theme.textTheme.headlineSmall,
+              ),
+              const SizedBox(height: 18),
+              Text(
+                '正在叫的是',
+                textAlign: TextAlign.center,
+                style: theme.textTheme.bodyMedium,
+              ),
+              const SizedBox(height: 4),
+              Text(
+                active.sound.cnName,
+                textAlign: TextAlign.center,
+                style: theme.textTheme.displaySmall?.copyWith(
+                  fontWeight: FontWeight.bold,
+                  color: theme.colorScheme.primary,
                 ),
-                const SizedBox(height: 8),
-                Text(
-                  challenge ? '强制认鸟模式：答对才能关闭' : '普通模式：随机鸟鸣正在响起',
-                  textAlign: TextAlign.center,
+              ),
+              const Spacer(),
+              FilledButton.icon(
+                onPressed: onDismiss,
+                icon: const Icon(Icons.alarm_off),
+                label: const Text('关闭闹钟'),
+                style: FilledButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(vertical: 16),
                 ),
-                const SizedBox(height: 24),
-                if (challenge)
-                  for (final option in active.options)
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 10),
-                      child: FilledButton.tonal(
-                        onPressed: () => onAnswer(option),
-                        child: Text(option.cnName),
-                      ),
-                    )
-                else
-                  FilledButton.icon(
-                    onPressed: onNormalDismiss,
-                    icon: const Icon(Icons.alarm_off),
-                    label: const Text('关闭闹钟'),
-                  ),
-                const Spacer(),
-                Text(
-                  '来源：${active.sound.source}',
-                  textAlign: TextAlign.center,
-                  style: Theme.of(context).textTheme.bodySmall,
+              ),
+              const SizedBox(height: 12),
+              OutlinedButton.icon(
+                onPressed: onSnooze,
+                icon: const Icon(Icons.snooze),
+                label: const Text('贪睡 5 分钟'),
+                style: OutlinedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(vertical: 14),
                 ),
-              ],
-            ),
+              ),
+              const SizedBox(height: 10),
+              Text(
+                '来源：${active.sound.source}',
+                textAlign: TextAlign.center,
+                style: theme.textTheme.bodySmall,
+              ),
+            ],
           ),
         ),
       ),
@@ -2309,11 +2408,17 @@ String _weekdayLabel(int day) {
 }
 
 String _repeatText(BirdAlarm alarm) {
-  if (alarm.useChinaWorkdays) return '中国工作日';
-  final days = alarm.repeatDays;
-  if (days.isEmpty) return '仅一次';
-  if (days.length == 7) return '每天';
-  return days.map(_weekdayLabel).join(' ');
+  switch (alarm.repeatRule) {
+    case RepeatRule.chinaWorkdays:
+      return '中国工作日';
+    case RepeatRule.chinaHolidays:
+      return '中国法定节假日';
+    case RepeatRule.weekdays:
+      final days = alarm.repeatDays;
+      if (days.isEmpty) return '仅一次';
+      if (days.length == 7) return '每天';
+      return days.map(_weekdayLabel).join(' ');
+  }
 }
 
 String _safeFileName(String value) {
@@ -2327,6 +2432,76 @@ String? _mimeFor(String path) {
   if (lower.endsWith('.wav')) return 'audio/wav';
   if (lower.endsWith('.ogg')) return 'audio/ogg';
   return null;
+}
+
+/// 中国节假日数据：在线实时获取（timor.tech），带本地缓存；离线/失败时回退到
+/// [ChinaWorkdayCalendar] 内置的 2026 表。数据为 日期(yyyy-MM-dd) -> 是否放假。
+class ChinaHolidayData {
+  static const _dataPrefix = 'holiday_cn_data_';
+  static const _fetchedPrefix = 'holiday_cn_fetched_';
+  static final Map<String, bool> _offDays = {};
+
+  /// 查某日是否放假：true=放假, false=调休补班, null=无在线数据。
+  static bool? lookup(String dateKey) => _offDays[dateKey];
+
+  /// 用本地缓存填充内存数据（快速、无网络）。排闹钟前调用。
+  static Future<void> loadCache() async {
+    final prefs = await SharedPreferences.getInstance();
+    final now = DateTime.now();
+    for (final year in {now.year, now.year + 1}) {
+      final cached = prefs.getString('$_dataPrefix$year');
+      if (cached != null) _merge(cached);
+    }
+  }
+
+  /// 后台刷新当前年与次年的数据；有更新返回 true（调用方可据此重排闹钟）。
+  static Future<bool> refresh() async {
+    final prefs = await SharedPreferences.getInstance();
+    final now = DateTime.now();
+    var changed = false;
+    for (final year in {now.year, now.year + 1}) {
+      final fetchedAt = prefs.getInt('$_fetchedPrefix$year') ?? 0;
+      final hasCache = prefs.getString('$_dataPrefix$year') != null;
+      final ageMs = now.millisecondsSinceEpoch - fetchedAt;
+      if (hasCache && ageMs < 7 * 86400000) continue; // 一周内刷过就跳过
+      try {
+        final resp = await http
+            .get(Uri.parse('https://timor.tech/api/holiday/year/$year'))
+            .timeout(const Duration(seconds: 8));
+        if (resp.statusCode == 200 && _merge(resp.body)) {
+          await prefs.setString('$_dataPrefix$year', resp.body);
+          await prefs.setInt('$_fetchedPrefix$year', now.millisecondsSinceEpoch);
+          changed = true;
+        }
+      } catch (_) {
+        // 离线/失败：继续用缓存或内置 2026 表。
+      }
+    }
+    return changed;
+  }
+
+  // 解析 timor.tech 返回并合并进内存；解析到有效数据返回 true。
+  static bool _merge(String body) {
+    try {
+      final map = jsonDecode(body) as Map<String, dynamic>;
+      final holiday = map['holiday'];
+      if (holiday is! Map) return false;
+      var any = false;
+      for (final value in holiday.values) {
+        if (value is Map) {
+          final date = value['date'] as String?;
+          final isOff = value['holiday'] as bool?;
+          if (date != null && isOff != null) {
+            _offDays[date] = isOff;
+            any = true;
+          }
+        }
+      }
+      return any;
+    } catch (_) {
+      return false;
+    }
+  }
 }
 
 class ChinaWorkdayCalendar {
@@ -2376,10 +2551,24 @@ class ChinaWorkdayCalendar {
   };
 
   static bool isWorkday(DateTime date) {
-    final key = _dateKey(date);
-    if (_adjustedWorkDates2026.contains(key)) return true;
-    if (_holidayDates2026.contains(key)) return false;
+    final off = _offDayOverride(_dateKey(date));
+    if (off != null) return !off;
     return date.weekday >= DateTime.monday && date.weekday <= DateTime.friday;
+  }
+
+  // 是否为中国法定节假日（放假日）。调休补班日不算节假日。
+  static bool isHoliday(DateTime date) {
+    return _offDayOverride(_dateKey(date)) ?? false;
+  }
+
+  // 该日期是否放假：true=放假, false=调休补班, null=普通日（按周一~周五判断）。
+  // 优先用在线节假日数据（ChinaHolidayData），无则回退到内置 2026 表。
+  static bool? _offDayOverride(String key) {
+    final online = ChinaHolidayData.lookup(key);
+    if (online != null) return online;
+    if (_adjustedWorkDates2026.contains(key)) return false;
+    if (_holidayDates2026.contains(key)) return true;
+    return null;
   }
 
   static String _dateKey(DateTime date) {

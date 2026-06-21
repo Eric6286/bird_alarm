@@ -2,7 +2,6 @@ package com.birdalarm.bird_alarm
 
 import android.Manifest
 import android.app.AlarmManager
-import android.app.KeyguardManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
@@ -27,6 +26,8 @@ import io.flutter.plugin.common.MethodChannel
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.nio.ByteBuffer
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 import kotlin.math.max
 import kotlin.math.min
 
@@ -34,6 +35,10 @@ class MainActivity : FlutterActivity() {
     private val channelName = "bird_alarm/system_alarm"
     private var launchedByAlarm = false
     private var channel: MethodChannel? = null
+    // 音频转码很耗时，放后台线程跑，避免阻塞平台主线程导致 UI 卡死。
+    private val transcodeExecutor: ExecutorService = Executors.newSingleThreadExecutor()
+    private val mainHandler = Handler(Looper.getMainLooper())
+    @Volatile private var isDestroyed = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         launchedByAlarm = intent?.getBooleanExtra("launch_alarm", false) == true ||
@@ -86,6 +91,10 @@ class MainActivity : FlutterActivity() {
                     stopAlarmSound()
                     result.success(null)
                 }
+                "snoozeAlarm" -> {
+                    snoozeAlarm()
+                    result.success(null)
+                }
                 "testSystemAlarm" -> {
                     clearScheduledSystemAlarms()
                     clearPendingAlarmLaunch()
@@ -99,10 +108,29 @@ class MainActivity : FlutterActivity() {
                     if (inputPath == null || outputPath == null) {
                         result.error("missing_path", "inputPath and outputPath are required", null)
                     } else {
-                        try {
-                            result.success(transcodeAudio(inputPath, outputPath, gain.toFloat()))
-                        } catch (error: Exception) {
-                            result.error("transcode_failed", error.message, null)
+                        // 在后台线程转码，完成后切回主线程返回结果；result 只回调一次，
+                        // 且用 isDestroyed 守卫，避免转码途中 Activity 销毁时回调到失效引擎崩溃。
+                        transcodeExecutor.execute {
+                            try {
+                                val output = transcodeAudio(inputPath, outputPath, gain.toFloat())
+                                mainHandler.post {
+                                    if (!isDestroyed) {
+                                        try {
+                                            result.success(output)
+                                        } catch (_: Exception) {
+                                        }
+                                    }
+                                }
+                            } catch (error: Exception) {
+                                mainHandler.post {
+                                    if (!isDestroyed) {
+                                        try {
+                                            result.error("transcode_failed", error.message, null)
+                                        } catch (_: Exception) {
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -124,6 +152,12 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    override fun onDestroy() {
+        isDestroyed = true
+        transcodeExecutor.shutdown()
+        super.onDestroy()
+    }
+
     private fun scheduleAlarm(triggerAtMillis: Long) {
         armForegroundAlarmService(triggerAtMillis)
         val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
@@ -140,6 +174,44 @@ class MainActivity : FlutterActivity() {
         } else {
             alarmManager.setExact(AlarmManager.RTC_WAKEUP, triggerAtMillis, idleOperation)
         }
+        schedulePreAlarmCountdown(triggerAtMillis)
+    }
+
+    // 响铃前 10 分钟安排一个倒计时通知（Live Update）；若已不足 10 分钟则立即显示。
+    private fun schedulePreAlarmCountdown(triggerAtMillis: Long) {
+        val leadAt = triggerAtMillis - AlarmReceiver.PRE_ALARM_LEAD_MILLIS
+        if (leadAt <= System.currentTimeMillis()) {
+            AlarmReceiver.showCountdownNotification(this, triggerAtMillis)
+            return
+        }
+        val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                alarmManager.setExactAndAllowWhileIdle(
+                    AlarmManager.RTC_WAKEUP,
+                    leadAt,
+                    preAlarmPendingIntent(triggerAtMillis)
+                )
+            } else {
+                alarmManager.setExact(
+                    AlarmManager.RTC_WAKEUP,
+                    leadAt,
+                    preAlarmPendingIntent(triggerAtMillis)
+                )
+            }
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun preAlarmPendingIntent(triggerAtMillis: Long): PendingIntent {
+        return PendingIntent.getBroadcast(
+            this,
+            AlarmReceiver.PRE_ALARM_REQUEST_CODE,
+            Intent(this, AlarmReceiver::class.java)
+                .setAction(AlarmReceiver.ACTION_PRE_ALARM)
+                .putExtra(AlarmReceiver.EXTRA_TRIGGER_AT, triggerAtMillis),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
     }
 
     private fun cancelAlarm() {
@@ -153,6 +225,9 @@ class MainActivity : FlutterActivity() {
         alarmManager.cancel(alarmBroadcastPendingIntent(1001))
         alarmManager.cancel(alarmBroadcastPendingIntent(1004))
         alarmManager.cancel(alarmActivityPendingIntent())
+        alarmManager.cancel(preAlarmPendingIntent(0L))
+        (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
+            .cancel(AlarmReceiver.COUNTDOWN_NOTIFICATION_ID)
     }
 
     private fun armForegroundAlarmService(triggerAtMillis: Long) {
@@ -236,17 +311,25 @@ class MainActivity : FlutterActivity() {
             .apply()
     }
 
+    private fun snoozeAlarm() {
+        // 供 Flutter 响铃遮罩的"贪睡"按钮使用：把贪睡动作交给前台服务处理
+        // （停当前铃 + N 分钟后重排）。服务此时已在前台运行，startService 即可送达。
+        startService(
+            Intent(this, AlarmSoundService::class.java)
+                .setAction(AlarmSoundService.ACTION_SNOOZE)
+        )
+    }
+
+    // 让响铃时的主界面（Flutter 全屏响铃遮罩）显示在锁屏之上、并点亮屏幕。
+    // 不调用 requestDismissKeyguard：用户无需解锁即可在遮罩上关闭/贪睡。
     private fun prepareAlarmWindow() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
             setShowWhenLocked(true)
             setTurnScreenOn(true)
-            val keyguardManager = getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
-            keyguardManager.requestDismissKeyguard(this, null)
         } else {
             @Suppress("DEPRECATION")
             window.addFlags(
                 WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
-                    WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD or
                     WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
             )
         }
@@ -262,6 +345,24 @@ class MainActivity : FlutterActivity() {
             PackageManager.PERMISSION_GRANTED
         ) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 2001)
+        }
+        // Android 14 (API 34)+ 默认不再授予 USE_FULL_SCREEN_INTENT，否则锁屏响铃会被
+        // 降级成普通横幅通知而非全屏。引导用户授予"全屏通知"权限以恢复锁屏全屏响铃。
+        if (Build.VERSION.SDK_INT >= 34) {
+            val notificationManager =
+                getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            if (!notificationManager.canUseFullScreenIntent()) {
+                try {
+                    startActivity(
+                        Intent(
+                            Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT,
+                            Uri.parse("package:$packageName")
+                        )
+                    )
+                    return
+                } catch (_: Exception) {
+                }
+            }
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager

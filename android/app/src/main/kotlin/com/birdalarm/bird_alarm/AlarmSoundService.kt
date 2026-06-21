@@ -1,5 +1,7 @@
 package com.birdalarm.bird_alarm
 
+import android.app.AlarmManager
+import android.app.KeyguardManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -33,6 +35,10 @@ class AlarmSoundService : Service() {
             ACTION_RING -> {
                 ring()
                 return START_STICKY
+            }
+            ACTION_SNOOZE -> {
+                snooze()
+                return START_NOT_STICKY
             }
         }
         startForeground(NOTIFICATION_ID, buildNotification(isRinging = false))
@@ -73,20 +79,73 @@ class AlarmSoundService : Service() {
             )
         @Suppress("DEPRECATION")
         wakeLock.acquire(30_000)
+        // 先确定本轮鸟鸣，确保通知能显示正确鸟名（通知在播放器启动前就要构建）。
+        NativeAlarmPlayer.ensureRingingAsset(this)
         startForeground(NOTIFICATION_ID, buildNotification(isRinging = true))
         NativeAlarmPlayer.start(this)
+        // 锁屏/息屏时把主界面(MainActivity, 含 showWhenLocked)带到前台显示 Flutter 全屏
+        // 响铃遮罩；亮屏已解锁时不打断用户，只用通知。通知的全屏意图作为兜底。
+        if (shouldUseFullScreen()) {
+            try {
+                startActivity(
+                    Intent(this, MainActivity::class.java).apply {
+                        flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                            Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                            Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                            Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
+                        putExtra("launch_alarm", true)
+                    }
+                )
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    // 锁屏或息屏 → 拉起全屏响铃页；亮屏且已解锁 → 只用通知提醒。
+    private fun shouldUseFullScreen(): Boolean {
+        val keyguardManager = getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
+        val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+        return keyguardManager.isKeyguardLocked || !powerManager.isInteractive
+    }
+
+    // 贪睡：停掉当前铃声与通知，N 分钟后重新触发响铃。
+    private fun snooze() {
+        NativeAlarmPlayer.stop(this)
+        val triggerAt = System.currentTimeMillis() + SNOOZE_MINUTES * 60_000L
+        val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        val pendingIntent = PendingIntent.getBroadcast(
+            this,
+            SNOOZE_REQUEST_CODE,
+            Intent(this, AlarmReceiver::class.java).putExtra("launch_alarm", true),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
         try {
-            startActivity(
-                Intent(this, AlarmRingActivity::class.java).apply {
-                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or
-                        Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                        Intent.FLAG_ACTIVITY_SINGLE_TOP or
-                        Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
-                    putExtra("launch_alarm", true)
-                }
-            )
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                alarmManager.setExactAndAllowWhileIdle(
+                    AlarmManager.RTC_WAKEUP,
+                    triggerAt,
+                    pendingIntent
+                )
+            } else {
+                alarmManager.setExact(AlarmManager.RTC_WAKEUP, triggerAt, pendingIntent)
+            }
         } catch (_: Exception) {
         }
+        val notificationManager =
+            getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        notificationManager.cancel(NOTIFICATION_ID)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        } else {
+            @Suppress("DEPRECATION")
+            stopForeground(true)
+        }
+        stopSelf()
+    }
+
+    private fun currentBirdName(): String {
+        val prefs = getSharedPreferences("bird_alarm_native", Context.MODE_PRIVATE)
+        return BirdAlarmAssets.cnNameFor(prefs.getString("ringing_asset", null))
     }
 
     private fun buildNotification(
@@ -108,9 +167,8 @@ class AlarmSoundService : Service() {
             notificationManager.createNotificationChannel(channel)
         }
 
-        val contentActivity =
-            if (isRinging) AlarmRingActivity::class.java else MainActivity::class.java
-        val activityIntent = Intent(this, contentActivity).apply {
+        // 始终指向 MainActivity：响铃时带 launch_alarm，由 Flutter 显示全屏响铃遮罩。
+        val activityIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or
                 Intent.FLAG_ACTIVITY_CLEAR_TOP or
                 Intent.FLAG_ACTIVITY_SINGLE_TOP or
@@ -129,6 +187,12 @@ class AlarmSoundService : Service() {
             Intent(this, AlarmSoundService::class.java).setAction(ACTION_STOP),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
+        val snoozeIntent = PendingIntent.getService(
+            this,
+            1006,
+            Intent(this, AlarmSoundService::class.java).setAction(ACTION_SNOOZE),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
         val builder =
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 Notification.Builder(this, channelId)
@@ -138,11 +202,11 @@ class AlarmSoundService : Service() {
             }
         val contentText =
             if (isRinging) {
-                "随机鸟鸣正在响起，点这里进入强制清醒挑战"
+                "正在叫的是「${currentBirdName()}」"
             } else {
                 "下一次鸟鸣闹钟已守护"
             }
-        val title = if (isRinging) "鸟瘾闹钟" else "鸟瘾闹钟已启用"
+        val title = if (isRinging) "🐦 鸟瘾闹钟正在响起" else "鸟瘾闹钟已启用"
         return builder
             .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
             .setContentTitle(title)
@@ -159,7 +223,20 @@ class AlarmSoundService : Service() {
                 if (isRinging) setFullScreenIntent(contentIntent, true)
             }
             .setContentIntent(contentIntent)
-            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "停止", stopIntent)
+            .apply {
+                // 只有"正在响铃"时才给 关闭 / 贪睡 按钮，并提级为 Live Update（流体云胶囊）。
+                // 全屏响铃由 MainActivity(showWhenLocked) + Flutter 全屏遮罩负责，与这里的
+                // 提级互不影响，所以 Live Update 与全屏可同时成立。
+                if (isRinging) {
+                    addAction(android.R.drawable.ic_menu_close_clear_cancel, "关闭", stopIntent)
+                    addAction(
+                        android.R.drawable.ic_lock_idle_alarm,
+                        "贪睡 $SNOOZE_MINUTES 分钟",
+                        snoozeIntent
+                    )
+                    AlarmReceiver.requestPromotedOngoing(this)
+                }
+            }
             .build()
     }
 
@@ -167,8 +244,11 @@ class AlarmSoundService : Service() {
         const val ACTION_ARM = "com.birdalarm.bird_alarm.ARM_ALARM_SOUND"
         const val ACTION_RING = "com.birdalarm.bird_alarm.RING_ALARM_SOUND"
         const val ACTION_STOP = "com.birdalarm.bird_alarm.STOP_ALARM_SOUND"
+        const val ACTION_SNOOZE = "com.birdalarm.bird_alarm.SNOOZE_ALARM_SOUND"
         const val EXTRA_TRIGGER_AT_MILLIS = "trigger_at_millis"
         const val CHANNEL_ID = "bird_alarm_ringing"
         const val NOTIFICATION_ID = 1001
+        const val SNOOZE_MINUTES = 5
+        const val SNOOZE_REQUEST_CODE = 1005
     }
 }
