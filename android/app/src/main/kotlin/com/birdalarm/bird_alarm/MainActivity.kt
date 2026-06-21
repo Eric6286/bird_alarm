@@ -23,6 +23,7 @@ import android.view.WindowManager
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.plugin.common.MethodChannel
+import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.nio.ByteBuffer
@@ -59,6 +60,10 @@ class MainActivity : FlutterActivity() {
                     if (triggerAtMillis == null) {
                         result.error("missing_trigger", "triggerAtMillis is required", null)
                     } else {
+                        saveSoundPool(
+                            call.argument<List<String>>("soundPaths"),
+                            call.argument<Map<String, String>>("soundNames")
+                        )
                         scheduleAlarm(triggerAtMillis)
                         result.success(null)
                     }
@@ -295,6 +300,23 @@ class MainActivity : FlutterActivity() {
         return getSharedPreferences("bird_alarm_native", Context.MODE_PRIVATE)
             .getString("ringing_asset", null)
             ?.removePrefix("flutter_assets/assets/")
+    }
+
+    // 持久化 Flutter 下发的"可离线播放音库"（含下载的鸟鸣）与"路径→中文名"映射，
+    // 供响铃那一刻随机选鸟、以及响铃通知显示正确鸟名。
+    private fun saveSoundPool(paths: List<String>?, names: Map<String, String>?) {
+        val prefs = getSharedPreferences("bird_alarm_native", Context.MODE_PRIVATE)
+        val editor = prefs.edit()
+        val pool = paths?.filter { it.isNotBlank() }
+        if (pool.isNullOrEmpty()) {
+            editor.remove("sound_pool").remove("sound_names")
+        } else {
+            editor.putString("sound_pool", pool.joinToString("\n"))
+            val json = JSONObject()
+            names?.forEach { (key, value) -> json.put(key, value) }
+            editor.putString("sound_names", json.toString())
+        }
+        editor.apply()
     }
 
     private fun cancelAlarmNotification() {

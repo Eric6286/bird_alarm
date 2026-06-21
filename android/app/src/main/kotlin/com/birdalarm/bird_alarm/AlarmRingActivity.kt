@@ -43,7 +43,7 @@ class AlarmRingActivity : Activity() {
 
     private fun currentBirdName(): String {
         val prefs = getSharedPreferences("bird_alarm_native", Context.MODE_PRIVATE)
-        return BirdAlarmAssets.cnNameFor(prefs.getString("ringing_asset", null))
+        return BirdAlarmAssets.cnNameFor(this, prefs.getString("ringing_asset", null))
     }
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()

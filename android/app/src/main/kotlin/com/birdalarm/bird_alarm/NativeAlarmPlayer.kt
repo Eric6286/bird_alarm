@@ -16,10 +16,16 @@ object NativeAlarmPlayer {
     fun ensureRingingAsset(context: Context): String {
         val prefs = context.applicationContext
             .getSharedPreferences("bird_alarm_native", Context.MODE_PRIVATE)
-        return prefs.getString("ringing_asset", null)
-            ?: BirdAlarmAssets.sounds.random().also {
-                prefs.edit().putString("ringing_asset", it).apply()
-            }
+        prefs.getString("ringing_asset", null)?.let { return it }
+        // 从 Flutter 下发的完整音库（含下载到本机的鸟鸣）里随机选；为空时回退内置 10 个。
+        val pool = prefs.getString("sound_pool", null)
+            ?.split('\n')
+            ?.filter { it.isNotBlank() }
+            ?.takeIf { it.isNotEmpty() }
+            ?: BirdAlarmAssets.sounds
+        return pool.random().also {
+            prefs.edit().putString("ringing_asset", it).apply()
+        }
     }
 
     fun start(context: Context) {
@@ -44,13 +50,19 @@ object NativeAlarmPlayer {
             )
             isLooping = true
             try {
-                val descriptor = appContext.assets.openFd(assetPath)
-                setDataSource(
-                    descriptor.fileDescriptor,
-                    descriptor.startOffset,
-                    descriptor.length
-                )
-                descriptor.close()
+                val localFile = File(assetPath)
+                if (assetPath.startsWith("/") && localFile.exists()) {
+                    // 下载到本机的鸟鸣是普通文件，按文件路径直接播放。
+                    setDataSource(localFile.absolutePath)
+                } else {
+                    val descriptor = appContext.assets.openFd(assetPath)
+                    setDataSource(
+                        descriptor.fileDescriptor,
+                        descriptor.startOffset,
+                        descriptor.length
+                    )
+                    descriptor.close()
+                }
             } catch (_: Exception) {
                 try {
                     val file = File(appContext.cacheDir, assetPath.substringAfterLast('/'))
