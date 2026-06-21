@@ -26,6 +26,8 @@ class BirdAlarmApp extends StatelessWidget {
     return MaterialApp(
       title: '鸟瘾闹钟',
       debugShowCheckedModeBanner: false,
+      // 跟随系统深浅色；浅色保留原有奶油观感，深色用 M3 自动配色。
+      themeMode: ThemeMode.system,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(
           seedColor: const Color(0xFF1D7C76),
@@ -33,8 +35,20 @@ class BirdAlarmApp extends StatelessWidget {
         ),
         useMaterial3: true,
         scaffoldBackgroundColor: const Color(0xFFFFF5DF),
+        appBarTheme: const AppBarTheme(backgroundColor: Color(0xFFFFF5DF)),
         cardTheme: CardTheme(
           color: Colors.white,
+          elevation: 0,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+        ),
+      ),
+      darkTheme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: const Color(0xFF1D7C76),
+          brightness: Brightness.dark,
+        ),
+        useMaterial3: true,
+        cardTheme: CardTheme(
           elevation: 0,
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
         ),
@@ -933,7 +947,10 @@ class _AlarmHomePageState extends State<AlarmHomePage>
                 const SizedBox(height: 8),
                 Text(
                   '前往 xeno-canto.org 注册账户，在个人页面获取免费 API Key，填入后可提升搜索请求额度。',
-                  style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
                 ),
                 const SizedBox(height: 16),
                 FilledButton.icon(
@@ -960,7 +977,6 @@ class _AlarmHomePageState extends State<AlarmHomePage>
     return Scaffold(
       appBar: AppBar(
         title: const Text('鸟瘾闹钟'),
-        backgroundColor: const Color(0xFFFFF5DF),
         actions: [
           IconButton(
             tooltip: '测试系统闹钟',
@@ -1266,7 +1282,7 @@ class _AlarmEditorState extends State<AlarmEditor> {
                         _useChinaWorkdays
                             ? const Icon(Icons.lock_outline, size: 16)
                             : null,
-                    disabledColor: Colors.black12,
+                    disabledColor: Theme.of(context).disabledColor,
                     surfaceTintColor: Colors.transparent,
                     onSelected: (selected) {
                       if (_useChinaWorkdays) return;
@@ -1751,9 +1767,15 @@ class _LibraryPanel extends StatelessWidget {
         Container(
           padding: const EdgeInsets.all(14),
           decoration: BoxDecoration(
-            color: const Color(0xFFEAF6F2),
+            color: Theme.of(context).brightness == Brightness.light
+                ? const Color(0xFFEAF6F2)
+                : Theme.of(context).colorScheme.surfaceContainerHighest,
             borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: const Color(0xFFB7DCD4)),
+            border: Border.all(
+              color: Theme.of(context).brightness == Brightness.light
+                  ? const Color(0xFFB7DCD4)
+                  : Theme.of(context).colorScheme.outlineVariant,
+            ),
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -2028,9 +2050,15 @@ class _AboutPage extends StatelessWidget {
         Container(
           padding: const EdgeInsets.all(18),
           decoration: BoxDecoration(
-            color: const Color(0xFFEAF6F2),
+            color: Theme.of(context).brightness == Brightness.light
+                ? const Color(0xFFEAF6F2)
+                : Theme.of(context).colorScheme.surfaceContainerHighest,
             borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: const Color(0xFFB7DCD4)),
+            border: Border.all(
+              color: Theme.of(context).brightness == Brightness.light
+                  ? const Color(0xFFB7DCD4)
+                  : Theme.of(context).colorScheme.outlineVariant,
+            ),
           ),
           child: Row(
             children: [
@@ -2101,7 +2129,10 @@ class _AboutPage extends StatelessWidget {
                 const SizedBox(height: 8),
                 const Text(
                   '所有录音均遵循 xeno-canto Creative Commons 授权协议使用。',
-                  style: TextStyle(fontSize: 12, color: Colors.grey),
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
                 ),
               ],
             ),
@@ -2182,7 +2213,9 @@ class AlarmOverlay extends StatelessWidget {
   Widget build(BuildContext context) {
     return Positioned.fill(
       child: Material(
-        color: const Color(0xFFF2E8D5),
+        color: Theme.of(context).brightness == Brightness.light
+            ? const Color(0xFFF2E8D5)
+            : Theme.of(context).colorScheme.surface,
         child: SafeArea(
           child: Padding(
             padding: const EdgeInsets.all(24),
