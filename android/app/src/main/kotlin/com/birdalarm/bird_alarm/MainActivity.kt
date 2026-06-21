@@ -54,6 +54,7 @@ class MainActivity : FlutterActivity() {
                     if (triggerAtMillis == null) {
                         result.error("missing_trigger", "triggerAtMillis is required", null)
                     } else {
+                        saveSoundPool(call.argument<List<String>>("soundPaths"))
                         scheduleAlarm(triggerAtMillis)
                         result.success(null)
                     }
@@ -220,6 +221,22 @@ class MainActivity : FlutterActivity() {
         return getSharedPreferences("bird_alarm_native", Context.MODE_PRIVATE)
             .getString("ringing_asset", null)
             ?.removePrefix("flutter_assets/assets/")
+    }
+
+    // 持久化 Flutter 下发的"可离线播放音库"（内置 asset + 下载到本机的鸟鸣），
+    // 供响铃那一刻随机选鸟；下载的鸟鸣由此真正进入抽取池。
+    private fun saveSoundPool(paths: List<String>?) {
+        val pool = paths?.filter { it.isNotBlank() }
+        getSharedPreferences("bird_alarm_native", Context.MODE_PRIVATE)
+            .edit()
+            .apply {
+                if (pool.isNullOrEmpty()) {
+                    remove("sound_pool")
+                } else {
+                    putString("sound_pool", pool.joinToString("\n"))
+                }
+            }
+            .apply()
     }
 
     private fun cancelAlarmNotification() {
