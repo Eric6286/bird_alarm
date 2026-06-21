@@ -1,7 +1,6 @@
 package com.birdalarm.bird_alarm
 
 import android.app.AlarmManager
-import android.app.KeyguardManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -83,21 +82,9 @@ class AlarmSoundService : Service() {
         NativeAlarmPlayer.ensureRingingAsset(this)
         startForeground(NOTIFICATION_ID, buildNotification(isRinging = true))
         NativeAlarmPlayer.start(this)
-        // 仅在锁屏 / 息屏时拉起全屏响铃页；亮屏解锁时只靠通知（heads-up）提醒，不打断用户。
-        if (shouldUseFullScreen()) {
-            try {
-                startActivity(
-                    Intent(this, AlarmRingActivity::class.java).apply {
-                        flags = Intent.FLAG_ACTIVITY_NEW_TASK or
-                            Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                            Intent.FLAG_ACTIVITY_SINGLE_TOP or
-                            Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
-                        putExtra("launch_alarm", true)
-                    }
-                )
-            } catch (_: Exception) {
-            }
-        }
+        // 全屏响铃页改由通知的「全屏意图」(setFullScreenIntent) 拉起：系统会在锁屏/息屏时
+        // 自动全屏、亮屏解锁时降级为通知。targetSdk 36 下前台服务直接 startActivity 会被
+        // Android 的后台启动限制(BAL)拦截，所以这里不再手动 startActivity。
     }
 
     // 贪睡：停掉当前铃声与通知，N 分钟后重新触发响铃。
@@ -133,13 +120,6 @@ class AlarmSoundService : Service() {
             stopForeground(true)
         }
         stopSelf()
-    }
-
-    // 锁屏或息屏 → 需要全屏响铃页唤醒；亮屏且已解锁 → 只用通知提醒。
-    private fun shouldUseFullScreen(): Boolean {
-        val keyguardManager = getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
-        val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
-        return keyguardManager.isKeyguardLocked || !powerManager.isInteractive
     }
 
     private fun currentBirdName(): String {
@@ -224,8 +204,10 @@ class AlarmSoundService : Service() {
             }
             .setContentIntent(contentIntent)
             .apply {
-                // 只有"正在响铃"的通知才给 关闭 / 贪睡 按钮，并在 Android 16 上提级为
-                // Live Update；"已启用/已守护"的常驻通知保持普通通知、不放任何按钮。
+                // 只有"正在响铃"的通知才给 关闭 / 贪睡 按钮。
+                // 注意：响铃通知【不】提级为 Live Update——在 ColorOS 等 ROM 上，
+                // 一旦被做成流体云胶囊就会吞掉「全屏意图」，导致锁屏只剩横幅、无法全屏。
+                // 全屏响铃靠 setFullScreenIntent 拉起；Live Update 只用在"即将响铃"倒计时上。
                 if (isRinging) {
                     addAction(android.R.drawable.ic_menu_close_clear_cancel, "关闭", stopIntent)
                     addAction(
@@ -233,7 +215,6 @@ class AlarmSoundService : Service() {
                         "贪睡 $SNOOZE_MINUTES 分钟",
                         snoozeIntent
                     )
-                    AlarmReceiver.requestPromotedOngoing(this)
                 }
             }
             .build()
