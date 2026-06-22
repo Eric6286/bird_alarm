@@ -96,6 +96,11 @@ class MainActivity : FlutterActivity() {
                     stopAlarmSound()
                     result.success(null)
                 }
+                "isAlarmRinging" -> {
+                    // 本轮是否仍在响：ringing_asset 在响铃那一刻写入、被任意「停止」路径
+                    // （通知关闭/贪睡、app 内关闭、服务销毁）清除。供 Flutter 遮罩判断是否该自关。
+                    result.success(getRingingAsset() != null)
+                }
                 "snoozeAlarm" -> {
                     snoozeAlarm()
                     result.success(null)
