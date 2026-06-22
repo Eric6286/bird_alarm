@@ -240,6 +240,9 @@ class _AlarmHomePageState extends State<AlarmHomePage>
   String? _previewingSoundId;
   bool _loaded = false;
   bool _checkingAlarmLaunch = false;
+  // 刚关闭/贪睡本轮闹钟的时刻：用来吞掉随后迟到的 alarmFired/resumed 重复触发，
+  // 避免第一个遮罩关掉后立刻又弹出第二个（随机鸟）响铃遮罩。
+  DateTime? _lastDismissedAt;
   bool _searching = false;
   int _selectedTab = 0;
   BirdLibraryFilter _libraryFilter = BirdLibraryFilter.all;
@@ -344,6 +347,7 @@ class _AlarmHomePageState extends State<AlarmHomePage>
     _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
       setState(() => _now = DateTime.now());
       _checkAlarms();
+      _dismissOverlayIfNativeStopped();
     });
   }
 
@@ -411,6 +415,13 @@ class _AlarmHomePageState extends State<AlarmHomePage>
 
   Future<void> _handleAlarmLaunch() async {
     if (!_loaded || _checkingAlarmLaunch || _activeAlarm != null) return;
+    // 刚关过本轮闹钟的几秒内，吞掉迟到的 alarmFired/resumed：此时原生 ringing_asset 已清，
+    // 若继续消费会拿到 assetPath=null → 随机选鸟弹出第二个响铃遮罩。
+    final dismissedAt = _lastDismissedAt;
+    if (dismissedAt != null &&
+        DateTime.now().difference(dismissedAt) < const Duration(seconds: 5)) {
+      return;
+    }
     _checkingAlarmLaunch = true;
     try {
       final launch =
@@ -441,6 +452,15 @@ class _AlarmHomePageState extends State<AlarmHomePage>
         continue;
       }
       if (!_alarmRunsOnDate(alarm, now)) continue;
+      if (Platform.isAndroid) {
+        // 原生引擎才是真正的响铃执行者（选鸟 + 放音）。app 在前台/锁屏可见时，绝不能再用
+        // Flutter 自己随机播一只鸟——否则会和原生那只鸟「两只鸟叠着响」，且两个关闭键各停一个。
+        // 改为消费原生这一轮，用原生选定的同一只鸟显示遮罩（useNativeAudio=true，不另放音）。
+        // 这里不置 _lastTriggeredMinute：原生 launch_alarm 标志可能稍晚才写，靠下一秒重试；
+        // 一旦消费成功，_ring 会置 _lastTriggeredMinute 且 _activeAlarm 非空挡住后续触发。
+        _handleAlarmLaunch();
+        return;
+      }
       _lastTriggeredMinute = minuteStamp;
       _ring(alarm);
       break;
@@ -508,6 +528,7 @@ class _AlarmHomePageState extends State<AlarmHomePage>
 
   Future<void> _dismissAlarm() async {
     if (_activeAlarm == null) return;
+    _lastDismissedAt = DateTime.now();
     await _player.stop();
     await _stopNativeAlarmSound();
     setState(() {
@@ -517,8 +538,33 @@ class _AlarmHomePageState extends State<AlarmHomePage>
     await _syncSystemAlarm();
   }
 
+  // 响铃遮罩显示期间，若铃声是从「通知」的关闭/贪睡键停掉的（原生引擎已停、ringing_asset
+  // 已清），遮罩这边收不到回调会一直留在屏上。每秒轮询原生是否还在响，停了就把遮罩也关掉，
+  // 让「通知关闭」和「app 内关闭」行为一致。仅在 Android 原生响铃模式下生效。
+  Future<void> _dismissOverlayIfNativeStopped() async {
+    if (_activeAlarm == null || !Platform.isAndroid) return;
+    bool stillRinging;
+    try {
+      stillRinging =
+          await _systemAlarmChannel.invokeMethod<bool>('isAlarmRinging') ??
+          true;
+    } catch (_) {
+      return; // 通道不可用时不误关遮罩。
+    }
+    if (!stillRinging && _activeAlarm != null) {
+      _lastDismissedAt = DateTime.now();
+      await _player.stop();
+      setState(() {
+        _activeAlarm = null;
+        _previewingSoundId = null;
+      });
+      await _syncSystemAlarm();
+    }
+  }
+
   Future<void> _snoozeAlarm() async {
     if (_activeAlarm == null) return;
+    _lastDismissedAt = DateTime.now();
     await _player.stop();
     if (Platform.isAndroid) {
       try {

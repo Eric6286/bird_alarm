@@ -96,6 +96,11 @@ class MainActivity : FlutterActivity() {
                     stopAlarmSound()
                     result.success(null)
                 }
+                "isAlarmRinging" -> {
+                    // 本轮是否仍在响：ringing_asset 在响铃那一刻写入、被任意「停止」路径
+                    // （通知关闭/贪睡、app 内关闭、服务销毁）清除。供 Flutter 遮罩判断是否该自关。
+                    result.success(getRingingAsset() != null)
+                }
                 "snoozeAlarm" -> {
                     snoozeAlarm()
                     result.success(null)
@@ -327,10 +332,15 @@ class MainActivity : FlutterActivity() {
 
     private fun stopAlarmSound() {
         stopService(Intent(this, AlarmSoundService::class.java))
+        // 关掉本轮闹钟时一并清掉启动标志（持久 + 内存）：否则随后迟到的 onNewIntent/resumed/
+        // alarmFired 会让 consumeLaunchAlarm 再次返回 launched=true，而 ringing_asset 此刻已被
+        // 移除 → assetPath=null → Flutter 随机选一只鸟弹出"第二个响铃遮罩"（需点两次关闭）。
         getSharedPreferences("bird_alarm_native", Context.MODE_PRIVATE)
             .edit()
             .remove("ringing_asset")
+            .putBoolean("launch_alarm", false)
             .apply()
+        launchedByAlarm = false
     }
 
     private fun snoozeAlarm() {
