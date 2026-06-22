@@ -66,7 +66,15 @@ class AlarmSoundService : Service() {
         val prefs = getSharedPreferences("bird_alarm_native", Context.MODE_PRIVATE)
         val now = System.currentTimeMillis()
         val lastTrigger = prefs.getLong("last_trigger_at", 0L)
-        if (now - lastTrigger < 3_000 && NativeAlarmPlayer.isPlaying()) return
+        if (now - lastTrigger < 3_000 && NativeAlarmPlayer.isPlaying()) {
+            // 即便判定为"重复触发"（AlarmReceiver 已抢先起播并写了 last_trigger_at），也必须
+            // 补发响铃前台通知再返回：它是全应用唯一带「全屏意图 + 关闭/贪睡键 + Live Update 提级」
+            // 的通知，同时满足 startForegroundService 的前台契约。否则会出现"只响声、无通知、
+            // 无全屏、无流体云"。鸟名复用 AlarmReceiver 已写好的 ringing_asset。
+            NativeAlarmPlayer.ensureRingingAsset(this)
+            startForeground(NOTIFICATION_ID, buildNotification(isRinging = true))
+            return
+        }
         prefs.edit()
             .putBoolean("launch_alarm", true)
             .putLong("last_trigger_at", now)

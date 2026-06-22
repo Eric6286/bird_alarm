@@ -240,6 +240,9 @@ class _AlarmHomePageState extends State<AlarmHomePage>
   String? _previewingSoundId;
   bool _loaded = false;
   bool _checkingAlarmLaunch = false;
+  // 刚关闭/贪睡本轮闹钟的时刻：用来吞掉随后迟到的 alarmFired/resumed 重复触发，
+  // 避免第一个遮罩关掉后立刻又弹出第二个（随机鸟）响铃遮罩。
+  DateTime? _lastDismissedAt;
   bool _searching = false;
   int _selectedTab = 0;
   BirdLibraryFilter _libraryFilter = BirdLibraryFilter.all;
@@ -411,6 +414,13 @@ class _AlarmHomePageState extends State<AlarmHomePage>
 
   Future<void> _handleAlarmLaunch() async {
     if (!_loaded || _checkingAlarmLaunch || _activeAlarm != null) return;
+    // 刚关过本轮闹钟的几秒内，吞掉迟到的 alarmFired/resumed：此时原生 ringing_asset 已清，
+    // 若继续消费会拿到 assetPath=null → 随机选鸟弹出第二个响铃遮罩。
+    final dismissedAt = _lastDismissedAt;
+    if (dismissedAt != null &&
+        DateTime.now().difference(dismissedAt) < const Duration(seconds: 5)) {
+      return;
+    }
     _checkingAlarmLaunch = true;
     try {
       final launch =
@@ -508,6 +518,7 @@ class _AlarmHomePageState extends State<AlarmHomePage>
 
   Future<void> _dismissAlarm() async {
     if (_activeAlarm == null) return;
+    _lastDismissedAt = DateTime.now();
     await _player.stop();
     await _stopNativeAlarmSound();
     setState(() {
@@ -519,6 +530,7 @@ class _AlarmHomePageState extends State<AlarmHomePage>
 
   Future<void> _snoozeAlarm() async {
     if (_activeAlarm == null) return;
+    _lastDismissedAt = DateTime.now();
     await _player.stop();
     if (Platform.isAndroid) {
       try {
