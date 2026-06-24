@@ -2196,6 +2196,9 @@ extension _FirstOrNull<T> on Iterable<T> {
 class _AboutPage extends StatelessWidget {
   const _AboutPage();
 
+  // 关于页展示的版本号——发版时与 pubspec.yaml 的 version 同步更新。
+  static const _appVersion = 'v1.2.0';
+
   @override
   Widget build(BuildContext context) {
     return ListView(
@@ -2231,12 +2234,56 @@ class _AboutPage extends StatelessWidget {
                       style: Theme.of(context).textTheme.headlineSmall
                           ?.copyWith(fontWeight: FontWeight.w800),
                     ),
+                    const SizedBox(height: 4),
+                    Text(
+                      '$_appVersion · Eric6286 fork',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
+                    ),
                     const SizedBox(height: 6),
                     const Text('给鸟瘾综合征患者的早晨自救工具。'),
                   ],
                 ),
               ),
             ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(18),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('版本与来源', style: Theme.of(context).textTheme.titleLarge),
+                const SizedBox(height: 10),
+                Text('当前版本：$_appVersion'),
+                const SizedBox(height: 10),
+                const Text(
+                  '这是 Eric6286 基于原作者 oastwy 的「鸟瘾闹钟」做的个人自用 fork。在原版基础上去掉了强制认鸟挑战，新增锁屏直接关闹钟、按中国节假日重复、深色模式、闹钟 Live Updates，并修复了锁屏 / 息屏响铃与整夜耗电等问题。',
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  '所有改动仅出于自用需要，与原作者无关，原作者不对这些改动负责。下方「关于我们 / 致谢 / 找到我们」各栏均为原作者的内容，特此保留致谢。',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                const _SocialLinkTile(
+                  icon: Icons.code,
+                  label: '本 fork 源码（Eric6286）',
+                  url: 'https://github.com/Eric6286/bird_alarm',
+                ),
+                const _SocialLinkTile(
+                  icon: Icons.account_tree_outlined,
+                  label: '原作者项目（oastwy）',
+                  url: 'https://github.com/oastwy/bird_alarm',
+                ),
+              ],
+            ),
           ),
         ),
         const SizedBox(height: 16),
@@ -2300,6 +2347,14 @@ class _AboutPage extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text('找到我们', style: Theme.of(context).textTheme.titleLarge),
+                const SizedBox(height: 6),
+                Text(
+                  '以下为原作者 oastwy 的频道与联系方式，本 fork 予以保留；本 fork 的问题请走上方 GitHub，勿打扰原作者。',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                ),
                 const SizedBox(height: 10),
                 const Text('小红书、B站、小宇宙、抖音和微博等平台，全网同名。'),
                 const SizedBox(height: 10),
