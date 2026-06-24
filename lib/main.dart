@@ -234,6 +234,7 @@ class _AlarmHomePageState extends State<AlarmHomePage>
   Map<String, BirdName> _nameIndex = const {};
   Set<String> _downloadingIds = const {};
   Timer? _ticker;
+  AppLifecycleState _lifecycleState = AppLifecycleState.resumed;
   DateTime? _lastTriggeredMinute;
   ActiveAlarm? _activeAlarm;
   DateTime _now = DateTime.now();
@@ -344,18 +345,44 @@ class _AlarmHomePageState extends State<AlarmHomePage>
       _requestAlarmPermissions();
     }
     _load();
-    _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
-      setState(() => _now = DateTime.now());
-      _checkAlarms();
-      _dismissOverlayIfNativeStopped();
-    });
+    _reconcileTicker();
+  }
+
+  void _tick(Timer _) {
+    setState(() => _now = DateTime.now());
+    _checkAlarms();
+    _dismissOverlayIfNativeStopped();
+  }
+
+  // 省电关键：每秒计时器只在「界面真正可见(resumed)」或「正在响铃(_activeAlarm!=null)」时运行。
+  // 退到后台 / 锁屏熄屏(paused/hidden)且没有正在响的闹钟时停掉，避免整夜每秒重建整页界面 +
+  // 跨平台轮询白耗电。绝不在 inactive 状态停——锁屏遮挡下的前台(showWhenLocked 场景)会上报
+  // inactive，那时遮罩可能正显示、需要继续每秒轮询原生以便自动关闭。
+  void _reconcileTicker() {
+    final isBackground =
+        _lifecycleState == AppLifecycleState.paused ||
+        _lifecycleState == AppLifecycleState.hidden;
+    final shouldRun = _activeAlarm != null || !isBackground;
+    if (shouldRun) {
+      _ticker ??= Timer.periodic(const Duration(seconds: 1), _tick);
+    } else {
+      _ticker?.cancel();
+      _ticker = null;
+    }
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    _lifecycleState = state;
     if (state == AppLifecycleState.resumed) {
       _handleAlarmLaunch();
+    } else if ((state == AppLifecycleState.paused ||
+            state == AppLifecycleState.hidden) &&
+        _activeAlarm == null) {
+      // 退到后台/熄屏且没有正在响的闹钟时，顺手清掉可能残留的「屏幕常亮」标志（双保险）。
+      _releaseAlarmWindow();
     }
+    _reconcileTicker();
   }
 
   @override
@@ -490,6 +517,9 @@ class _AlarmHomePageState extends State<AlarmHomePage>
       _previewingSoundId = null;
       _activeAlarm = ActiveAlarm(alarm: alarm, sound: sound);
     });
+    // 原生可能在 app 退后台/熄屏(paused)时把本轮闹钟拉起来，此时计时器是停的；
+    // 一旦有了正在响的闹钟，立即恢复计时器，保证响铃遮罩能每秒轮询、被通知关闭时自动收起。
+    _reconcileTicker();
     if (!useNativeAudio) {
       await _playSound(sound);
     }
@@ -526,6 +556,17 @@ class _AlarmHomePageState extends State<AlarmHomePage>
     }
   }
 
+  // 响铃结束后请原生释放「屏幕常亮」标志，让屏幕恢复正常熄屏（省电关键）。
+  // 原生侧若判定仍在响铃会自动跳过，不会误关正在响的那一轮。
+  Future<void> _releaseAlarmWindow() async {
+    if (!Platform.isAndroid) return;
+    try {
+      await _systemAlarmChannel.invokeMethod<void>('releaseAlarmWindow');
+    } catch (_) {
+      // 平台窗口标志不可用时忽略。
+    }
+  }
+
   Future<void> _dismissAlarm() async {
     if (_activeAlarm == null) return;
     _lastDismissedAt = DateTime.now();
@@ -535,6 +576,8 @@ class _AlarmHomePageState extends State<AlarmHomePage>
       _activeAlarm = null;
       _previewingSoundId = null;
     });
+    await _releaseAlarmWindow();
+    _reconcileTicker();
     await _syncSystemAlarm();
   }
 
@@ -558,6 +601,8 @@ class _AlarmHomePageState extends State<AlarmHomePage>
         _activeAlarm = null;
         _previewingSoundId = null;
       });
+      await _releaseAlarmWindow();
+      _reconcileTicker();
       await _syncSystemAlarm();
     }
   }
@@ -577,6 +622,8 @@ class _AlarmHomePageState extends State<AlarmHomePage>
       _activeAlarm = null;
       _previewingSoundId = null;
     });
+    await _releaseAlarmWindow();
+    _reconcileTicker();
   }
 
   Future<void> _stopNativeAlarmSound() async {
@@ -2149,6 +2196,9 @@ extension _FirstOrNull<T> on Iterable<T> {
 class _AboutPage extends StatelessWidget {
   const _AboutPage();
 
+  // 关于页展示的版本号——发版时与 pubspec.yaml 的 version 同步更新。
+  static const _appVersion = 'v1.2.0';
+
   @override
   Widget build(BuildContext context) {
     return ListView(
@@ -2184,12 +2234,48 @@ class _AboutPage extends StatelessWidget {
                       style: Theme.of(context).textTheme.headlineSmall
                           ?.copyWith(fontWeight: FontWeight.w800),
                     ),
+                    const SizedBox(height: 4),
+                    Text(
+                      '$_appVersion · ErikaAlk fork',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
+                    ),
                     const SizedBox(height: 6),
                     const Text('给鸟瘾综合征患者的早晨自救工具。'),
                   ],
                 ),
               ),
             ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(18),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('版本与来源', style: Theme.of(context).textTheme.titleLarge),
+                const SizedBox(height: 10),
+                Text('当前版本：$_appVersion'),
+                const SizedBox(height: 10),
+                const Text(
+                  '这是 ErikaAlk 基于原作者 oastwy 的「鸟瘾闹钟」做的个人自用 fork。在原版基础上去掉了强制认鸟挑战，新增锁屏直接关闹钟、按中国节假日重复、深色模式、闹钟 Live Updates，并修复了锁屏 / 息屏响铃与整夜耗电等问题。',
+                ),
+                const SizedBox(height: 8),
+                const _SocialLinkTile(
+                  icon: Icons.code,
+                  label: '本 fork 源码（ErikaAlk）',
+                  url: 'https://github.com/ErikaAlk/bird_alarm',
+                ),
+                const _SocialLinkTile(
+                  icon: Icons.account_tree_outlined,
+                  label: '原作者项目（oastwy）',
+                  url: 'https://github.com/oastwy/bird_alarm',
+                ),
+              ],
+            ),
           ),
         ),
         const SizedBox(height: 16),
@@ -2253,6 +2339,14 @@ class _AboutPage extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text('找到我们', style: Theme.of(context).textTheme.titleLarge),
+                const SizedBox(height: 6),
+                Text(
+                  '以下为原作者 oastwy 的频道与联系方式，本 fork 予以保留；本 fork 的问题请走上方 GitHub，勿打扰原作者。',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                ),
                 const SizedBox(height: 10),
                 const Text('小红书、B站、小宇宙、抖音和微博等平台，全网同名。'),
                 const SizedBox(height: 10),

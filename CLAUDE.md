@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 `bird_alarm`（鸟瘾闹钟）是一个 Flutter 闹钟 App，用随机鸟鸣叫醒，可从 xeno-canto 下载鸟声。
-**只针对 Android**——iOS 不维护，改动时无需考虑 iOS。这是 [Eric6286](https://github.com/Eric6286/bird_alarm)
+**只针对 Android**——iOS 不维护，改动时无需考虑 iOS。这是 [ErikaAlk](https://github.com/ErikaAlk/bird_alarm)
 基于个人使用习惯对原作者项目的 fork，所有改动仅为自用。
 
 ## 环境与命令
@@ -24,9 +24,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 整个 app 是 **单文件 Flutter UI（`lib/main.dart`，~1500 行）** + **原生 Kotlin 闹钟引擎**，两者通过 MethodChannel `bird_alarm/system_alarm` 通信。
 
 - **原生（Kotlin）是闹钟的真正执行者**，App 关闭也能响：
-  - `MainActivity.kt` —— MethodChannel 桥（`scheduleAlarmAt`/`cancelAlarm`/`stopAlarmSound`/`snoozeAlarm`/`prepareAlarmWindow`/`consumeLaunchAlarm`/`testSystemAlarm`/`transcodeAudio`），并通过 `AlarmManager.setAlarmClock` + `setExactAndAllowWhileIdle` 排闹钟。
-  - `AlarmReceiver.kt` —— 闹钟广播：起前台服务、播声音、（锁屏/息屏时）拉起响铃界面；并发"响铃前 10 分钟倒计时通知"。
-  - `AlarmSoundService.kt` —— 前台服务，负责持续播放 + 响铃/守护通知 + 贪睡（`ACTION_SNOOZE`，默认 5 分钟）。响铃通知 id = `1001`（唯一，勿与别处冲突）。
+  - `MainActivity.kt` —— MethodChannel 桥（`scheduleAlarmAt`/`cancelAlarm`/`stopAlarmSound`/`snoozeAlarm`/`prepareAlarmWindow`/`releaseAlarmWindow`/`consumeLaunchAlarm`/`testSystemAlarm`/`transcodeAudio`），并通过 `AlarmManager.setAlarmClock` + `setExactAndAllowWhileIdle` 排闹钟。**排闹钟时不再起前台服务**（那会整夜挂前台、是耗电元凶）；只排 `AlarmManager` 精确闹钟 + 发一条普通常驻「已守护」通知（`showGuardNotification`，id=`1011`）。
+  - `AlarmReceiver.kt` —— 闹钟广播：起前台服务、播声音、（锁屏/息屏时）拉起响铃界面；并发"响铃前 10 分钟倒计时通知"。响铃那一刻清掉「已守护」通知（id=`1011`），让位给响铃通知。
+  - `AlarmSoundService.kt` —— 前台服务，负责持续播放 + 响铃通知 + 贪睡（`ACTION_SNOOZE`，默认 5 分钟）。响铃通知 id = `1001`（唯一，勿与别处冲突）。**前台服务只在「真正响铃」时存在**（由 `AlarmReceiver` 在响铃那一刻 `startForegroundService(ACTION_RING)` 起；精确闹钟触发的广播被允许在后台起前台服务）；`ACTION_ARM` 仅 `testSystemAlarm` 的 10 秒测试还在用。无 action 的重启分支会自停，避免变成「空转前台服务」挂整夜。
   - `NativeAlarmPlayer.kt` —— `MediaPlayer` 播放。`ensureRingingAsset()` 在**响铃那一刻**随机选定本轮鸟鸣并写入 `ringing_asset`（SharedPreferences `bird_alarm_native`）。
   - `BirdAlarmAssets.kt` —— 内置 10 个鸟鸣 asset 路径 + `cnNameFor()` 的中文名映射（须与 Dart 的 `_starterLibrary` 同步）。
   - `AlarmRingActivity.kt` —— **已不再作为响铃 UI**（仅残留 pending-intent 引用，无害）。响铃界面现在是 Flutter 的 `AlarmOverlay`。
@@ -42,6 +42,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - 可行机制：App 在前台时锁屏 → `MainActivity` 因 `showWhenLocked` 仍显示在锁屏上 → 前台计时器 `_checkAlarms` / `_handleAlarmLaunch` 设置 `_activeAlarm` → `AlarmOverlay` 直接在已可见的 `MainActivity` 上渲染（无需启动新 Activity，绕过 BAL）。
 - **必要代价**：App 在前台时锁屏点亮会显示本应用界面。这是"全屏响铃"与"Live Updates 同时成立"的前提，是有意为之，**不要为了"锁屏不显示 app"去掉 `MainActivity` 的 `showWhenLocked`——那样会把全屏弄没**。
 - `targetSdk` 保持 **36**（Live Updates 需要）。`prepareAlarmWindow` 只设 `setShowWhenLocked`/`setTurnScreenOn`，**不要 `requestDismissKeyguard`**（用户要无需解锁就能关/贪睡）。
+- **省电 vs 屏幕常亮（动响铃 UI 前必读）**：`prepareAlarmWindow` 还会加 `FLAG_KEEP_SCREEN_ON`，它**一旦设上、配合 `showWhenLocked`，会让本应用整夜强制亮屏**（实测整夜掉电 ~50% 的元凶之一）。所以响铃**结束**（关闭/贪睡/通知关闭）后必须调 `releaseAlarmWindow` 清掉它。`releaseAlarmWindow` **只 `clearFlags(FLAG_KEEP_SCREEN_ON | FLAG_ALLOW_LOCK_WHILE_SCREEN_ON)`，绝不动 `setShowWhenLocked`/`setTurnScreenOn`**（动了下一次锁屏全屏响铃会被 BAL 拦掉）；并在原生侧用 `getRingingAsset()!=null` 做「仍在响就不释放」的防抢守卫。Flutter 在三条收尾路径（`_dismissAlarm`/`_snoozeAlarm`/`_dismissOverlayIfNativeStopped`）+ 退后台(`paused`/`hidden`)时调它。
+- **每秒计时器要分生命周期**：`_ticker`（每秒 `setState` 重建整页 + 轮询原生）只在 `_activeAlarm!=null` 或 `resumed` 时跑（`_reconcileTicker`），退后台熄屏(`paused`/`hidden`)就停。**绝不在 `inactive` 停**——锁屏遮挡下的前台(showWhenLocked)上报 `inactive`，那时遮罩可能正显示、要继续轮询自动关。原生可能在 `paused` 时拉起响铃，所以 `_ring` 里置 `_activeAlarm` 后要立刻 `_reconcileTicker()` 把计时器拉回来。
 
 ## 其他容易踩的点
 
@@ -54,6 +56,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 仓库约定
 
-- `origin` = 原作者 `oastwy`；`fork` = `Eric6286`（用户的）。**改动推到 `fork`，并在 fork 上开 PR**，不直推默认分支。
+- `origin` = 原作者 `oastwy`；`fork` = `ErikaAlk`（用户的）。**改动推到 `fork`，并在 fork 上开 PR**，不直推默认分支。
 - 每次改动同步 `README.md` 的「更新记录」（带日期 + `pubspec.yaml` 版本号，倒序置顶）与代码同提交。
+- 改版本号时记得同步 `lib/main.dart` 里 `_AboutPage._appVersion`（关于页显示的版本号，硬编码、需手动跟 `pubspec.yaml` 对齐）。「关于」页有「版本与来源」栏标明这是 ErikaAlk 的 fork、原作者是 `oastwy`，改关于页时务必保留原作者致谢与免责说明。
 - `install.ps1` / `install.bat` / `鸟瘾闹钟-修复方案.html` 已在 `.gitignore`，是本地工具/文档，不进版本库。

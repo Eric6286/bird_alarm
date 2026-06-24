@@ -41,8 +41,11 @@ class AlarmSoundService : Service() {
                 return START_NOT_STICKY
             }
         }
+        // 走到这里通常是「系统杀掉服务后用 null intent 重启」(START_STICKY 重投)。
+        // 绝不把进程长期挂成「空转前台服务」——那会整夜空转耗电。满足前台契约后立刻自停。
         startForeground(NOTIFICATION_ID, buildNotification(isRinging = false))
-        return START_STICKY
+        stopSelf()
+        return START_NOT_STICKY
     }
 
     override fun onDestroy() {

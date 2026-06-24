@@ -27,9 +27,11 @@ class AlarmReceiver : BroadcastReceiver() {
         }
 
         cancelThisAlarmRound(context)
-        // 响铃了就清掉响铃前的倒计时通知。
-        (context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
-            .cancel(COUNTDOWN_NOTIFICATION_ID)
+        // 响铃了就清掉响铃前的倒计时通知和「已守护」常驻通知（让位给响铃通知）。
+        (context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).apply {
+            cancel(COUNTDOWN_NOTIFICATION_ID)
+            cancel(MainActivity.GUARD_NOTIFICATION_ID)
+        }
 
         val prefs = context.getSharedPreferences("bird_alarm_native", Context.MODE_PRIVATE)
         val now = System.currentTimeMillis()
@@ -227,6 +229,7 @@ class AlarmReceiver : BroadcastReceiver() {
                 context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             notificationManager.cancel(COUNTDOWN_NOTIFICATION_ID)
             notificationManager.cancel(AlarmSoundService.NOTIFICATION_ID)
+            notificationManager.cancel(MainActivity.GUARD_NOTIFICATION_ID)
             context.getSharedPreferences("bird_alarm_native", Context.MODE_PRIVATE)
                 .edit()
                 .putBoolean("launch_alarm", false)
