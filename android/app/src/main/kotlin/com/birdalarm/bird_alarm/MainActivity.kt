@@ -12,6 +12,8 @@ import android.media.MediaCodecInfo
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaMuxer
+import android.app.Notification
+import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.os.Build
 import android.os.Bundle
@@ -86,6 +88,10 @@ class MainActivity : FlutterActivity() {
                 }
                 "prepareAlarmWindow" -> {
                     prepareAlarmWindow()
+                    result.success(null)
+                }
+                "releaseAlarmWindow" -> {
+                    releaseAlarmWindow()
                     result.success(null)
                 }
                 "requestAlarmPermissions" -> {
@@ -169,7 +175,12 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun scheduleAlarm(triggerAtMillis: Long) {
-        armForegroundAlarmService(triggerAtMillis)
+        // 关键省电改动：不再在「排闹钟那一刻」就启动一个全程前台服务。
+        // 旧实现 armForegroundAlarmService() 会从设闹钟一直挂前台服务到响铃（整夜七八小时），
+        // 把 app 钉在前台态、挡住系统休眠，是整夜耗电的元凶（前台活动时长 ≈ 整晚）。
+        // 真正的响铃由下面的精确闹钟（setAlarmClock + setExactAndAllowWhileIdle）到点拉起
+        // AlarmReceiver，再由它启动前台服务播音——精确闹钟触发的广播被系统允许在后台启动前台服务，
+        // 所以「不漏响」不依赖这个常驻服务。
         val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
         val operation = alarmBroadcastPendingIntent(1001)
         val idleOperation = alarmBroadcastPendingIntent(1004)
@@ -185,6 +196,8 @@ class MainActivity : FlutterActivity() {
             alarmManager.setExact(AlarmManager.RTC_WAKEUP, triggerAtMillis, idleOperation)
         }
         schedulePreAlarmCountdown(triggerAtMillis)
+        // 「已守护」改用普通常驻通知（不是前台服务）：保留可见反馈，但完全不耗电。
+        showGuardNotification()
     }
 
     // 响铃前 10 分钟安排一个倒计时通知（Live Update）；若已不足 10 分钟则立即显示。
@@ -236,8 +249,10 @@ class MainActivity : FlutterActivity() {
         alarmManager.cancel(alarmBroadcastPendingIntent(1004))
         alarmManager.cancel(alarmActivityPendingIntent())
         alarmManager.cancel(preAlarmPendingIntent(0L))
-        (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
-            .cancel(AlarmReceiver.COUNTDOWN_NOTIFICATION_ID)
+        val notificationManager =
+            getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        notificationManager.cancel(AlarmReceiver.COUNTDOWN_NOTIFICATION_ID)
+        notificationManager.cancel(GUARD_NOTIFICATION_ID)
     }
 
     private fun armForegroundAlarmService(triggerAtMillis: Long) {
@@ -369,6 +384,71 @@ class MainActivity : FlutterActivity() {
             WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
                 WindowManager.LayoutParams.FLAG_ALLOW_LOCK_WHILE_SCREEN_ON
         )
+    }
+
+    // 响铃被关闭/贪睡/通知关闭后，释放「屏幕常亮」标志，让屏幕恢复正常熄屏。
+    // 这是省电关键：FLAG_KEEP_SCREEN_ON 一旦设上、配合 showWhenLocked，本应用会一直显示在锁屏上
+    // 且强制亮屏到天亮（亮屏时长 ≈ 整晚）。这里把它清掉，屏幕就会按系统超时正常熄灭。
+    // 注意：只清这两个 window flag，绝不调用 setShowWhenLocked(false)/setTurnScreenOn(false)——
+    // 那是锁屏全屏响铃的命脉，清了会导致下一次响铃从后台 startActivity 被 BAL 拦截、全屏弹不出来。
+    // 若原生此刻仍在响铃（ringing_asset 还在），则跳过释放，避免和刚开始的新一轮抢标志。
+    private fun releaseAlarmWindow() {
+        if (getRingingAsset() != null) return
+        runOnUiThread {
+            window.clearFlags(
+                WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
+                    WindowManager.LayoutParams.FLAG_ALLOW_LOCK_WHILE_SCREEN_ON
+            )
+        }
+    }
+
+    // 「已守护」常驻通知：普通低优先级通知（非前台服务），保留可见反馈但不把进程钉在前台。
+    // 排闹钟时显示，响铃时由 AlarmReceiver 清掉（让位给响铃通知），取消闹钟时一并清掉。
+    private fun showGuardNotification() {
+        val notificationManager =
+            getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                GUARD_CHANNEL_ID,
+                "鸟瘾闹钟守护",
+                NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                description = "已设定的下一次鸟鸣闹钟提示"
+                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+                setShowBadge(false)
+            }
+            notificationManager.createNotificationChannel(channel)
+        }
+        val contentIntent = PendingIntent.getActivity(
+            this,
+            GUARD_CONTENT_REQUEST_CODE,
+            Intent(this, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val builder =
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                Notification.Builder(this, GUARD_CHANNEL_ID)
+            } else {
+                @Suppress("DEPRECATION")
+                Notification.Builder(this)
+            }
+        val notification = builder
+            .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
+            .setContentTitle("鸟瘾闹钟已启用")
+            .setContentText("下一次鸟鸣闹钟已守护")
+            .setCategory(Notification.CATEGORY_STATUS)
+            .setPriority(Notification.PRIORITY_LOW)
+            .setOngoing(true)
+            .setAutoCancel(false)
+            .setShowWhen(false)
+            .setVisibility(Notification.VISIBILITY_PUBLIC)
+            .setContentIntent(contentIntent)
+            .build()
+        notificationManager.notify(GUARD_NOTIFICATION_ID, notification)
     }
 
     private fun requestAlarmPermissions() {
@@ -624,5 +704,12 @@ class MainActivity : FlutterActivity() {
         encoder.release()
         muxer.stop()
         muxer.release()
+    }
+
+    companion object {
+        // 「已守护」常驻通知（普通通知，非前台服务）。id 与响铃(1001)/倒计时(1010)错开。
+        const val GUARD_NOTIFICATION_ID = 1011
+        const val GUARD_CHANNEL_ID = "bird_alarm_guard"
+        const val GUARD_CONTENT_REQUEST_CODE = 1012
     }
 }
