@@ -2236,7 +2236,7 @@ class _AboutPage extends StatelessWidget {
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      '$_appVersion · Eric6286 fork',
+                      '$_appVersion · ErikaAlk fork',
                       style: Theme.of(context).textTheme.bodySmall?.copyWith(
                         color: Theme.of(context).colorScheme.onSurfaceVariant,
                       ),
@@ -2261,13 +2261,13 @@ class _AboutPage extends StatelessWidget {
                 Text('当前版本：$_appVersion'),
                 const SizedBox(height: 10),
                 const Text(
-                  '这是 Eric6286 基于原作者 oastwy 的「鸟瘾闹钟」做的个人自用 fork。在原版基础上去掉了强制认鸟挑战，新增锁屏直接关闹钟、按中国节假日重复、深色模式、闹钟 Live Updates，并修复了锁屏 / 息屏响铃与整夜耗电等问题。',
+                  '这是 ErikaAlk 基于原作者 oastwy 的「鸟瘾闹钟」做的个人自用 fork。在原版基础上去掉了强制认鸟挑战，新增锁屏直接关闹钟、按中国节假日重复、深色模式、闹钟 Live Updates，并修复了锁屏 / 息屏响铃与整夜耗电等问题。',
                 ),
                 const SizedBox(height: 8),
                 const _SocialLinkTile(
                   icon: Icons.code,
-                  label: '本 fork 源码（Eric6286）',
-                  url: 'https://github.com/Eric6286/bird_alarm',
+                  label: '本 fork 源码（ErikaAlk）',
+                  url: 'https://github.com/ErikaAlk/bird_alarm',
                 ),
                 const _SocialLinkTile(
                   icon: Icons.account_tree_outlined,

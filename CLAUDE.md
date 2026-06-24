@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 `bird_alarm`（鸟瘾闹钟）是一个 Flutter 闹钟 App，用随机鸟鸣叫醒，可从 xeno-canto 下载鸟声。
-**只针对 Android**——iOS 不维护，改动时无需考虑 iOS。这是 [Eric6286](https://github.com/Eric6286/bird_alarm)
+**只针对 Android**——iOS 不维护，改动时无需考虑 iOS。这是 [ErikaAlk](https://github.com/ErikaAlk/bird_alarm)
 基于个人使用习惯对原作者项目的 fork，所有改动仅为自用。
 
 ## 环境与命令
@@ -56,7 +56,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 仓库约定
 
-- `origin` = 原作者 `oastwy`；`fork` = `Eric6286`（用户的）。**改动推到 `fork`，并在 fork 上开 PR**，不直推默认分支。
+- `origin` = 原作者 `oastwy`；`fork` = `ErikaAlk`（用户的）。**改动推到 `fork`，并在 fork 上开 PR**，不直推默认分支。
 - 每次改动同步 `README.md` 的「更新记录」（带日期 + `pubspec.yaml` 版本号，倒序置顶）与代码同提交。
-- 改版本号时记得同步 `lib/main.dart` 里 `_AboutPage._appVersion`（关于页显示的版本号，硬编码、需手动跟 `pubspec.yaml` 对齐）。「关于」页有「版本与来源」栏标明这是 Eric6286 的 fork、原作者是 `oastwy`，改关于页时务必保留原作者致谢与免责说明。
+- 改版本号时记得同步 `lib/main.dart` 里 `_AboutPage._appVersion`（关于页显示的版本号，硬编码、需手动跟 `pubspec.yaml` 对齐）。「关于」页有「版本与来源」栏标明这是 ErikaAlk 的 fork、原作者是 `oastwy`，改关于页时务必保留原作者致谢与免责说明。
 - `install.ps1` / `install.bat` / `鸟瘾闹钟-修复方案.html` 已在 `.gitignore`，是本地工具/文档，不进版本库。
