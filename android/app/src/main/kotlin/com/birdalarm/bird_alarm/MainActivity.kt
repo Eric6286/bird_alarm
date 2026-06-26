@@ -290,17 +290,9 @@ class MainActivity : FlutterActivity() {
         )
     }
 
-    private fun alarmBroadcastPendingIntent(requestCode: Int): PendingIntent {
-        val intent = Intent(this, AlarmReceiver::class.java).apply {
-            putExtra("launch_alarm", true)
-        }
-        return PendingIntent.getBroadcast(
-            this,
-            requestCode,
-            intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-    }
+    // 配方集中在 AlarmShared.kt，这里只是带上 this 的便捷封装（排程与取消共用，保证可匹配）。
+    private fun alarmBroadcastPendingIntent(requestCode: Int): PendingIntent =
+        alarmBroadcastPendingIntent(this, requestCode)
 
     private fun notifyFlutterAlarmSoon() {
         Handler(Looper.getMainLooper()).postDelayed({
@@ -312,33 +304,33 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun hasPendingAlarmLaunch(): Boolean {
-        return getSharedPreferences("bird_alarm_native", Context.MODE_PRIVATE)
+        return getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .getBoolean("launch_alarm", false)
     }
 
     private fun clearPendingAlarmLaunch() {
-        getSharedPreferences("bird_alarm_native", Context.MODE_PRIVATE)
+        getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
             .putBoolean("launch_alarm", false)
             .apply()
     }
 
     private fun getRingingAsset(): String? {
-        return getSharedPreferences("bird_alarm_native", Context.MODE_PRIVATE)
+        return getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .getString("ringing_asset", null)
             ?.removePrefix("flutter_assets/assets/")
     }
 
     // 被「倒计时通知 → 关闭闹钟」跳过的那一次触发时刻（毫秒）；无则返回 0。
     private fun getSkippedTrigger(): Long {
-        return getSharedPreferences("bird_alarm_native", Context.MODE_PRIVATE)
+        return getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .getLong("skip_trigger_at", 0L)
     }
 
     // 持久化 Flutter 下发的"可离线播放音库"（含下载的鸟鸣）与"路径→中文名"映射，
     // 供响铃那一刻随机选鸟、以及响铃通知显示正确鸟名。
     private fun saveSoundPool(paths: List<String>?, names: Map<String, String>?) {
-        val prefs = getSharedPreferences("bird_alarm_native", Context.MODE_PRIVATE)
+        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val editor = prefs.edit()
         val pool = paths?.filter { it.isNotBlank() }
         if (pool.isNullOrEmpty()) {
@@ -363,7 +355,7 @@ class MainActivity : FlutterActivity() {
         // 关掉本轮闹钟时一并清掉启动标志（持久 + 内存）：否则随后迟到的 onNewIntent/resumed/
         // alarmFired 会让 consumeLaunchAlarm 再次返回 launched=true，而 ringing_asset 此刻已被
         // 移除 → assetPath=null → Flutter 随机选一只鸟弹出"第二个响铃遮罩"（需点两次关闭）。
-        getSharedPreferences("bird_alarm_native", Context.MODE_PRIVATE)
+        getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
             .remove("ringing_asset")
             .putBoolean("launch_alarm", false)

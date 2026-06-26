@@ -1,7 +1,6 @@
 package com.birdalarm.bird_alarm
 
 import android.app.AlarmManager
-import android.app.KeyguardManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -33,7 +32,7 @@ class AlarmReceiver : BroadcastReceiver() {
             cancel(MainActivity.GUARD_NOTIFICATION_ID)
         }
 
-        val prefs = context.getSharedPreferences("bird_alarm_native", Context.MODE_PRIVATE)
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val now = System.currentTimeMillis()
         val lastTrigger = prefs.getLong("last_trigger_at", 0L)
         if (now - lastTrigger < 30_000) return
@@ -68,42 +67,22 @@ class AlarmReceiver : BroadcastReceiver() {
         }
 
         // 响铃通知统一由 AlarmSoundService 负责（含全屏意图 + 关闭/贪睡动作），这里不再
-        // 单独 notify(1001)，避免抢同一 id。锁屏/息屏时直接拉起全屏响铃页（targetSdk 33
-        // 下系统允许闹钟从后台启动 Activity）；亮屏已解锁时只用通知，不打断用户。
+        // 单独 notify(1001)，避免抢同一 id。锁屏/息屏时尝试直接拉起全屏响铃页——targetSdk 36 上
+        // 后台 startActivity 多半被 BAL 拦掉（已 try/catch 吞掉），真正的全屏兜底靠响铃通知的
+        // setFullScreenIntent + MainActivity 的 showWhenLocked；亮屏已解锁时只用通知，不打断用户。
         if (shouldUseFullScreen(context)) {
-            val activityIntent = Intent(context, MainActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or
-                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                    Intent.FLAG_ACTIVITY_SINGLE_TOP or
-                    Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
-                putExtra("launch_alarm", true)
-            }
             try {
-                context.startActivity(activityIntent)
+                context.startActivity(fullScreenAlarmIntent(context))
             } catch (_: Exception) {
             }
         }
-    }
-
-    // 锁屏或息屏 → 拉起全屏响铃页；亮屏且已解锁 → 只用通知提醒。
-    private fun shouldUseFullScreen(context: Context): Boolean {
-        val keyguardManager = context.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
-        val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
-        return keyguardManager.isKeyguardLocked || !powerManager.isInteractive
     }
 
     private fun cancelThisAlarmRound(context: Context) {
         val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
         // 含贪睡再排的 1005：本轮重新响起时，作废上一轮可能还挂着的贪睡。
         listOf(1001, 1004, AlarmSoundService.SNOOZE_REQUEST_CODE).forEach { requestCode ->
-            alarmManager.cancel(
-                PendingIntent.getBroadcast(
-                    context,
-                    requestCode,
-                    Intent(context, AlarmReceiver::class.java).putExtra("launch_alarm", true),
-                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-                )
-            )
+            alarmManager.cancel(alarmBroadcastPendingIntent(context, requestCode))
         }
     }
 
@@ -188,14 +167,7 @@ class AlarmReceiver : BroadcastReceiver() {
             val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
             // 含贪睡再排的 1005，确保连带挂着的贪睡也一起取消。
             listOf(1001, 1004, AlarmSoundService.SNOOZE_REQUEST_CODE).forEach { requestCode ->
-                alarmManager.cancel(
-                    PendingIntent.getBroadcast(
-                        context,
-                        requestCode,
-                        Intent(context, AlarmReceiver::class.java).putExtra("launch_alarm", true),
-                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-                    )
-                )
+                alarmManager.cancel(alarmBroadcastPendingIntent(context, requestCode))
             }
             try {
                 context.stopService(Intent(context, AlarmSoundService::class.java))
@@ -207,7 +179,7 @@ class AlarmReceiver : BroadcastReceiver() {
             notificationManager.cancel(COUNTDOWN_NOTIFICATION_ID)
             notificationManager.cancel(AlarmSoundService.NOTIFICATION_ID)
             notificationManager.cancel(MainActivity.GUARD_NOTIFICATION_ID)
-            context.getSharedPreferences("bird_alarm_native", Context.MODE_PRIVATE)
+            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                 .edit()
                 .putBoolean("launch_alarm", false)
                 .putLong("skip_trigger_at", skipTriggerAt)
@@ -219,7 +191,7 @@ class AlarmReceiver : BroadcastReceiver() {
         fun requestPromotedOngoing(builder: Notification.Builder) {
             if (Build.VERSION.SDK_INT >= 36) {
                 builder.addExtras(
-                    Bundle().apply { putBoolean("android.requestPromotedOngoing", true) }
+                    Bundle().apply { putBoolean(EXTRA_REQUEST_PROMOTED_ONGOING, true) }
                 )
             }
         }

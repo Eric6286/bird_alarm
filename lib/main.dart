@@ -1961,17 +1961,7 @@ class _LibraryPanel extends StatelessWidget {
         const SizedBox(height: 12),
         Container(
           padding: const EdgeInsets.all(14),
-          decoration: BoxDecoration(
-            color: Theme.of(context).brightness == Brightness.light
-                ? const Color(0xFFEAF6F2)
-                : Theme.of(context).colorScheme.surfaceContainerHighest,
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(
-              color: Theme.of(context).brightness == Brightness.light
-                  ? const Color(0xFFB7DCD4)
-                  : Theme.of(context).colorScheme.outlineVariant,
-            ),
-          ),
+          decoration: _mintCardDecoration(context),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -2251,17 +2241,7 @@ class _AboutPage extends StatelessWidget {
       children: [
         Container(
           padding: const EdgeInsets.all(18),
-          decoration: BoxDecoration(
-            color: Theme.of(context).brightness == Brightness.light
-                ? const Color(0xFFEAF6F2)
-                : Theme.of(context).colorScheme.surfaceContainerHighest,
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(
-              color: Theme.of(context).brightness == Brightness.light
-                  ? const Color(0xFFB7DCD4)
-                  : Theme.of(context).colorScheme.outlineVariant,
-            ),
-          ),
+          decoration: _mintCardDecoration(context),
           child: Row(
             children: [
               SizedBox(
@@ -2615,6 +2595,22 @@ class AlarmOverlay extends StatelessWidget {
 String _weekdayLabel(int day) {
   const labels = {1: '一', 2: '二', 3: '三', 4: '四', 5: '五', 6: '六', 7: '日'};
   return labels[day]!;
+}
+
+// 浅色用奶绿信息卡配色，深色跟随 M3。库页与关于页的信息卡共用同一份装饰。
+BoxDecoration _mintCardDecoration(BuildContext context) {
+  final light = Theme.of(context).brightness == Brightness.light;
+  return BoxDecoration(
+    color: light
+        ? const Color(0xFFEAF6F2)
+        : Theme.of(context).colorScheme.surfaceContainerHighest,
+    borderRadius: BorderRadius.circular(8),
+    border: Border.all(
+      color: light
+          ? const Color(0xFFB7DCD4)
+          : Theme.of(context).colorScheme.outlineVariant,
+    ),
+  );
 }
 
 String _repeatText(BirdAlarm alarm) {

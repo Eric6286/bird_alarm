@@ -37,7 +37,7 @@ object BirdAlarmAssets {
         // 下载的鸟鸣文件名不在内置映射里，先查 Flutter 下发的"路径→中文名"映射。
         try {
             val raw = context
-                .getSharedPreferences("bird_alarm_native", Context.MODE_PRIVATE)
+                .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                 .getString("sound_names", null)
             if (!raw.isNullOrEmpty()) {
                 val name = org.json.JSONObject(raw).optString(assetPath)
