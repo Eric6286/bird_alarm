@@ -15,7 +15,7 @@ object NativeAlarmPlayer {
     // 决定本轮响铃的鸟鸣并持久化（若已决定则复用）。在建通知前调用，确保通知能显示正确鸟名。
     fun ensureRingingAsset(context: Context): String {
         val prefs = context.applicationContext
-            .getSharedPreferences("bird_alarm_native", Context.MODE_PRIVATE)
+            .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         prefs.getString("ringing_asset", null)?.let { return it }
         // 从 Flutter 下发的完整音库（含下载到本机的鸟鸣）里随机选；为空时回退内置 10 个。
         val pool = prefs.getString("sound_pool", null)
@@ -92,7 +92,7 @@ object NativeAlarmPlayer {
             }
             player = null
             appContext
-                .getSharedPreferences("bird_alarm_native", Context.MODE_PRIVATE)
+                .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                 .edit()
                 .remove("ringing_asset")
                 .apply()
@@ -109,7 +109,7 @@ object NativeAlarmPlayer {
         }
         player = null
         context.applicationContext
-            .getSharedPreferences("bird_alarm_native", Context.MODE_PRIVATE)
+            .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
             .remove("ringing_asset")
             .putBoolean("launch_alarm", false)

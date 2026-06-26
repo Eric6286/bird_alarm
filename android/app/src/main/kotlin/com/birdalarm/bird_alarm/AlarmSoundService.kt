@@ -1,7 +1,6 @@
 package com.birdalarm.bird_alarm
 
 import android.app.AlarmManager
-import android.app.KeyguardManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -66,7 +65,7 @@ class AlarmSoundService : Service() {
     private fun ring() {
         armedRunnable?.let { handler.removeCallbacks(it) }
         armedRunnable = null
-        val prefs = getSharedPreferences("bird_alarm_native", Context.MODE_PRIVATE)
+        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val now = System.currentTimeMillis()
         val lastTrigger = prefs.getLong("last_trigger_at", 0L)
         if (now - lastTrigger < 3_000 && NativeAlarmPlayer.isPlaying()) {
@@ -96,27 +95,12 @@ class AlarmSoundService : Service() {
         NativeAlarmPlayer.start(this)
         // 锁屏/息屏时把主界面(MainActivity, 含 showWhenLocked)带到前台显示 Flutter 全屏
         // 响铃遮罩；亮屏已解锁时不打断用户，只用通知。通知的全屏意图作为兜底。
-        if (shouldUseFullScreen()) {
+        if (shouldUseFullScreen(this)) {
             try {
-                startActivity(
-                    Intent(this, MainActivity::class.java).apply {
-                        flags = Intent.FLAG_ACTIVITY_NEW_TASK or
-                            Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                            Intent.FLAG_ACTIVITY_SINGLE_TOP or
-                            Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
-                        putExtra("launch_alarm", true)
-                    }
-                )
+                startActivity(fullScreenAlarmIntent(this))
             } catch (_: Exception) {
             }
         }
-    }
-
-    // 锁屏或息屏 → 拉起全屏响铃页；亮屏且已解锁 → 只用通知提醒。
-    private fun shouldUseFullScreen(): Boolean {
-        val keyguardManager = getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
-        val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
-        return keyguardManager.isKeyguardLocked || !powerManager.isInteractive
     }
 
     // 贪睡：停掉当前铃声与通知，N 分钟后重新触发响铃。
@@ -124,12 +108,7 @@ class AlarmSoundService : Service() {
         NativeAlarmPlayer.stop(this)
         val triggerAt = System.currentTimeMillis() + SNOOZE_MINUTES * 60_000L
         val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        val pendingIntent = PendingIntent.getBroadcast(
-            this,
-            SNOOZE_REQUEST_CODE,
-            Intent(this, AlarmReceiver::class.java).putExtra("launch_alarm", true),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
+        val pendingIntent = alarmBroadcastPendingIntent(this, SNOOZE_REQUEST_CODE)
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 alarmManager.setExactAndAllowWhileIdle(
@@ -155,7 +134,7 @@ class AlarmSoundService : Service() {
     }
 
     private fun currentBirdName(): String {
-        val prefs = getSharedPreferences("bird_alarm_native", Context.MODE_PRIVATE)
+        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         return BirdAlarmAssets.cnNameFor(this, prefs.getString("ringing_asset", null))
     }
 
