@@ -76,6 +76,11 @@ class AlarmReceiver : BroadcastReceiver() {
             } catch (_: Exception) {
             }
         }
+
+        // 当前这次已响：从「接下来若干次」时刻表里排掉本次（及更早的），把紧挨着的下一次也排上
+        // （含响铃前倒计时，可提前关）。这样即便用户从通知关掉、或 App 在后台没机会同步，相近的
+        // 下一个闹钟也不会漏排。精确闹钟不会提前触发，故 now 已 >= 本次时刻，filter{ it > now } 会排掉本次。
+        armNextUpcoming(context, now)
     }
 
     private fun cancelThisAlarmRound(context: Context) {
@@ -97,8 +102,14 @@ class AlarmReceiver : BroadcastReceiver() {
         const val COUNTDOWN_CHANNEL_ID = "bird_alarm_countdown"
         const val PRE_ALARM_LEAD_MILLIS = 10 * 60 * 1000L
 
-        // 响铃前 10 分钟的倒计时通知。Android 16 (API 36) 上请求提级为 Live Update（状态栏胶囊/锁屏/息屏常驻）。
-        fun showCountdownNotification(context: Context, triggerAt: Long) {
+        // 倒计时通知（动态倒计时 + 「关闭闹钟」按钮）。响铃前 10 分钟用它预告；贪睡时也复用它显示
+        // 「N 分钟后再响」并支持提前关。Android 16 (API 36) 上请求提级为 Live Update（状态栏胶囊/锁屏/息屏常驻）。
+        fun showCountdownNotification(
+            context: Context,
+            triggerAt: Long,
+            title: String = "🐦 鸟瘾闹钟即将响起",
+            text: String = "鸟鸣闹钟即将在设定时间响起",
+        ) {
             if (triggerAt <= 0L) return
             val notificationManager =
                 context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -142,8 +153,8 @@ class AlarmReceiver : BroadcastReceiver() {
                 }
             builder
                 .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
-                .setContentTitle("🐦 鸟瘾闹钟即将响起")
-                .setContentText("鸟鸣闹钟即将在设定时间响起")
+                .setContentTitle(title)
+                .setContentText(text)
                 .setCategory(Notification.CATEGORY_ALARM)
                 .setOngoing(true)
                 .setAutoCancel(false)
@@ -184,6 +195,10 @@ class AlarmReceiver : BroadcastReceiver() {
                 .putBoolean("launch_alarm", false)
                 .putLong("skip_trigger_at", skipTriggerAt)
                 .apply()
+            // 关掉「即将响的这次(skipTriggerAt)」后，从时刻表里排掉它（及更早的），把剩下最早的那次完整排上
+            // （精确闹钟 + 响铃前倒计时 + 已守护通知）。这样关掉贪睡/倒计时后，下一次照常响、无需打开 App，
+            // 相近的多个闹钟也能续上。Flutter 下次同步会刷新整张表并跳过本次(skip_trigger_at)。
+            armNextUpcoming(context, skipTriggerAt)
         }
 
         // 在 Android 16 (API 36) 上把常驻通知请求提级为 Live Update。

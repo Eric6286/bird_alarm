@@ -16,11 +16,14 @@
         android:name="${applicationName}"
         android:icon="@drawable/ic_launcher_bird"
         android:roundIcon="@drawable/ic_launcher_bird">
+        <!-- singleTask：全系统唯一实例。闹钟全屏 / 通知 / 状态栏闹钟芯片等任意途径用
+             FLAG_ACTIVITY_NEW_TASK 拉起，都复用同一实例(onNewIntent)，不再在「最近任务」里
+             分裂出第二张卡片。singleTask 同时提供 StrandHogg 防护（原先靠空 taskAffinity）。
+             勿改回 singleTop——那会让后台拉起时另开一个任务实例。 -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:launchMode="singleTop"
-            android:taskAffinity=""
+            android:launchMode="singleTask"
             android:theme="@style/LaunchTheme"
             android:showWhenLocked="true"
             android:turnScreenOn="true"
