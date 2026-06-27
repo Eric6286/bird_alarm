@@ -76,6 +76,11 @@ class AlarmReceiver : BroadcastReceiver() {
             } catch (_: Exception) {
             }
         }
+
+        // 当前这次已响：从「接下来若干次」时刻表里排掉本次（及更早的），把紧挨着的下一次也排上
+        // （含响铃前倒计时，可提前关）。这样即便用户从通知关掉、或 App 在后台没机会同步，相近的
+        // 下一个闹钟也不会漏排。精确闹钟不会提前触发，故 now 已 >= 本次时刻，filter{ it > now } 会排掉本次。
+        armNextUpcoming(context, now)
     }
 
     private fun cancelThisAlarmRound(context: Context) {
@@ -185,18 +190,15 @@ class AlarmReceiver : BroadcastReceiver() {
             notificationManager.cancel(COUNTDOWN_NOTIFICATION_ID)
             notificationManager.cancel(AlarmSoundService.NOTIFICATION_ID)
             notificationManager.cancel(MainActivity.GUARD_NOTIFICATION_ID)
-            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            prefs.edit()
+            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
                 .putBoolean("launch_alarm", false)
                 .putLong("skip_trigger_at", skipTriggerAt)
                 .apply()
-            // 关掉「即将响的这次」后，用 Flutter 预存的「再下一次」时刻，在原生层把下一次完整排上
-            // （精确闹钟 + 响铃前倒计时 + 已守护通知）。这样关掉贪睡/倒计时后，下一次（如明天）照常响、
-            // 无需打开 App。Flutter 下次同步会刷新 next_trigger_at 并跳过本次（skip_trigger_at）。
-            val nextAt = prefs.getLong("next_trigger_at", 0L)
-            if (nextAt > System.currentTimeMillis()) {
-                armAlarmAt(context, nextAt)
-            }
+            // 关掉「即将响的这次(skipTriggerAt)」后，从时刻表里排掉它（及更早的），把剩下最早的那次完整排上
+            // （精确闹钟 + 响铃前倒计时 + 已守护通知）。这样关掉贪睡/倒计时后，下一次照常响、无需打开 App，
+            // 相近的多个闹钟也能续上。Flutter 下次同步会刷新整张表并跳过本次(skip_trigger_at)。
+            armNextUpcoming(context, skipTriggerAt)
         }
 
         // 在 Android 16 (API 36) 上把常驻通知请求提级为 Live Update。

@@ -160,3 +160,27 @@ fun armAlarmAt(context: Context, triggerAtMillis: Long) {
     schedulePreAlarmCountdown(context, triggerAtMillis)
     showGuardNotification(context)
 }
+
+// Flutter 下发的「接下来若干次」发生时刻（逗号分隔的毫秒）。原生据此在每次响铃后/关闭后推进、续排下一次，
+// 这样相近的多个闹钟也能一个接一个自动排上，不依赖打开 App。Flutter 每次同步会刷新整张表。
+fun saveUpcomingTriggers(context: Context, csv: String) {
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .edit().putString("upcoming_triggers", csv).apply()
+}
+
+fun readUpcomingTriggers(context: Context): List<Long> {
+    val raw = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .getString("upcoming_triggers", null)
+    if (raw.isNullOrBlank()) return emptyList()
+    return raw.split(",").mapNotNull { it.trim().toLongOrNull() }.sorted()
+}
+
+// 排掉「截止 throughMillis（含）之前」的所有发生，把剩下最早且晚于现在的那一次完整排上。
+// 当前这次响铃后调用(throughMillis=now)、或在通知点关闭后调用(throughMillis=被关那次的时刻)。
+fun armNextUpcoming(context: Context, throughMillis: Long) {
+    val now = System.currentTimeMillis()
+    val remaining = readUpcomingTriggers(context).filter { it > throughMillis }
+    saveUpcomingTriggers(context, remaining.joinToString(","))
+    val soonest = remaining.firstOrNull { it > now }
+    if (soonest != null) armAlarmAt(context, soonest)
+}

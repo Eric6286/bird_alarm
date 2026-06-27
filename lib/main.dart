@@ -698,13 +698,13 @@ class _AlarmHomePageState extends State<AlarmHomePage>
         }
         // 把整库里"能离线播放的鸟鸣"（内置 asset + 下载到本机的文件）下发给原生，
         // 由原生在响铃那一刻随机选；这样下载的鸟鸣才会真正进入抽取池。
-        // 「再下一次」发生时刻一并下发：用户在倒计时/贪睡通知点「关闭」后，原生据此把下一次直接续排上，
-        // 不用打开 App。
-        final nextAfter = _nextEnabledAlarmDateTime(after: next);
+        // 把「接下来若干次」发生时刻一并下发：每次响铃后 / 在通知点「关闭」后，原生据此续排下一次，
+        // 不用打开 App，相近的多个闹钟也能一个接一个排上。
+        final upcoming = _upcomingTriggers();
         final pool = _nativeSoundPool();
         await _systemAlarmChannel.invokeMethod<void>('scheduleAlarmAt', {
           'triggerAtMillis': next.millisecondsSinceEpoch,
-          'nextTriggerAtMillis': nextAfter?.millisecondsSinceEpoch ?? 0,
+          'upcomingTriggers': upcoming.join(','),
           'label': '鸟瘾闹钟',
           'soundPaths': pool.map((entry) => entry.key).toList(),
           'soundNames': {for (final entry in pool) entry.key: entry.value},
@@ -1279,8 +1279,21 @@ class _AlarmHomePageState extends State<AlarmHomePage>
     return null;
   }
 
-  // 最近的一次启用闹钟发生时刻。传 after 则求「严格晚于 after」的那一次（用来算「再下一次」，
-  // 下发给原生，供倒计时/贪睡通知点「关闭」后续排下一次）。
+  // 接下来若干次（全局、跨所有启用闹钟）的发生时刻，升序的毫秒值。下发给原生，供「响铃后/关闭后
+  // 续排下一次」；取一小串即可覆盖相近的多个闹钟，Flutter 每次同步都会刷新整张表。
+  List<int> _upcomingTriggers({int count = 8}) {
+    final result = <int>[];
+    DateTime? cursor;
+    for (var i = 0; i < count; i++) {
+      final next = _nextEnabledAlarmDateTime(after: cursor);
+      if (next == null) break;
+      result.add(next.millisecondsSinceEpoch);
+      cursor = next;
+    }
+    return result;
+  }
+
+  // 最近的一次启用闹钟发生时刻。传 after 则求「严格晚于 after」的那一次。
   DateTime? _nextEnabledAlarmDateTime({DateTime? after}) {
     final from = after ?? DateTime.now();
     DateTime? best;

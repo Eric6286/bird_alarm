@@ -66,7 +66,7 @@ class MainActivity : FlutterActivity() {
                         )
                         scheduleAlarm(
                             triggerAtMillis,
-                            call.argument<Long>("nextTriggerAtMillis") ?: 0L,
+                            call.argument<String>("upcomingTriggers") ?: "",
                         )
                         result.success(null)
                     }
@@ -180,16 +180,13 @@ class MainActivity : FlutterActivity() {
         super.onDestroy()
     }
 
-    private fun scheduleAlarm(triggerAtMillis: Long, nextTriggerAtMillis: Long) {
-        // 关键省电改动：不再在「排闹钟那一刻」就启动全程前台服务（旧 armForegroundAlarmService 会整夜挂前台、
-        // 是夜间耗电元凶）。真正的响铃靠精确闹钟到点拉起 AlarmReceiver——它被允许在后台起前台服务播音，
-        // 所以「不漏响」不依赖常驻服务。排程细节集中在 AlarmShared.armAlarmAt（与 cancelUpcoming 续排共用）。
-        // 同时把「再下一次」的时刻存给原生：用户在倒计时/贪睡通知点「关闭」时，AlarmReceiver 据此把下一次
-        // 直接续排上，无需打开 App（见 AlarmReceiver.cancelUpcoming）。
-        getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit()
-            .putLong("next_trigger_at", nextTriggerAtMillis)
-            .apply()
+    private fun scheduleAlarm(triggerAtMillis: Long, upcomingCsv: String) {
+        // 关键省电改动：不再在排闹钟那一刻挂全程前台服务（旧 armForegroundAlarmService 是夜间耗电元凶）。
+        // 真正的响铃靠精确闹钟到点拉起 AlarmReceiver——它被允许在后台起前台服务播音，不漏响不依赖常驻服务。
+        // 排程细节集中在 AlarmShared.armAlarmAt（排程与续排共用一份）。
+        // 同时把「接下来若干次」的时刻表存给原生：每次响铃后 / 在通知点关闭后，原生据此把下一次直接续排上，
+        // 无需打开 App，相近的多个闹钟也能一个接一个排上（见 AlarmReceiver 与 armNextUpcoming）。
+        saveUpcomingTriggers(this, upcomingCsv)
         armAlarmAt(this, triggerAtMillis)
     }
 
@@ -207,11 +204,8 @@ class MainActivity : FlutterActivity() {
         alarmManager.cancel(alarmBroadcastPendingIntent(AlarmSoundService.SNOOZE_REQUEST_CODE))
         alarmManager.cancel(alarmShowIntent(this))
         alarmManager.cancel(preAlarmPendingIntent(this, 0L))
-        // 闹钟被整体取消/全禁用：清掉「再下一次」，免得 cancelUpcoming 据陈旧值误续排。
-        getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit()
-            .remove("next_trigger_at")
-            .apply()
+        // 闹钟被整体取消/全禁用：清掉「接下来若干次」时刻表，免得续排逻辑据陈旧值误排。
+        saveUpcomingTriggers(this, "")
         val notificationManager =
             getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         notificationManager.cancel(AlarmReceiver.COUNTDOWN_NOTIFICATION_ID)
