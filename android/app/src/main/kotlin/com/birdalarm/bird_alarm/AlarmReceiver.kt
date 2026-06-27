@@ -185,11 +185,18 @@ class AlarmReceiver : BroadcastReceiver() {
             notificationManager.cancel(COUNTDOWN_NOTIFICATION_ID)
             notificationManager.cancel(AlarmSoundService.NOTIFICATION_ID)
             notificationManager.cancel(MainActivity.GUARD_NOTIFICATION_ID)
-            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-                .edit()
+            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            prefs.edit()
                 .putBoolean("launch_alarm", false)
                 .putLong("skip_trigger_at", skipTriggerAt)
                 .apply()
+            // 关掉「即将响的这次」后，用 Flutter 预存的「再下一次」时刻，在原生层把下一次完整排上
+            // （精确闹钟 + 响铃前倒计时 + 已守护通知）。这样关掉贪睡/倒计时后，下一次（如明天）照常响、
+            // 无需打开 App。Flutter 下次同步会刷新 next_trigger_at 并跳过本次（skip_trigger_at）。
+            val nextAt = prefs.getLong("next_trigger_at", 0L)
+            if (nextAt > System.currentTimeMillis()) {
+                armAlarmAt(context, nextAt)
+            }
         }
 
         // 在 Android 16 (API 36) 上把常驻通知请求提级为 Live Update。

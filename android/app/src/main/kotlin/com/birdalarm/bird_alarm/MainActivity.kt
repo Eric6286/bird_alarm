@@ -12,8 +12,6 @@ import android.media.MediaCodecInfo
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaMuxer
-import android.app.Notification
-import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.os.Build
 import android.os.Bundle
@@ -66,7 +64,10 @@ class MainActivity : FlutterActivity() {
                             call.argument<List<String>>("soundPaths"),
                             call.argument<Map<String, String>>("soundNames")
                         )
-                        scheduleAlarm(triggerAtMillis)
+                        scheduleAlarm(
+                            triggerAtMillis,
+                            call.argument<Long>("nextTriggerAtMillis") ?: 0L,
+                        )
                         result.success(null)
                     }
                 }
@@ -179,67 +180,17 @@ class MainActivity : FlutterActivity() {
         super.onDestroy()
     }
 
-    private fun scheduleAlarm(triggerAtMillis: Long) {
-        // 关键省电改动：不再在「排闹钟那一刻」就启动一个全程前台服务。
-        // 旧实现 armForegroundAlarmService() 会从设闹钟一直挂前台服务到响铃（整夜七八小时），
-        // 把 app 钉在前台态、挡住系统休眠，是整夜耗电的元凶（前台活动时长 ≈ 整晚）。
-        // 真正的响铃由下面的精确闹钟（setAlarmClock + setExactAndAllowWhileIdle）到点拉起
-        // AlarmReceiver，再由它启动前台服务播音——精确闹钟触发的广播被系统允许在后台启动前台服务，
-        // 所以「不漏响」不依赖这个常驻服务。
-        val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        val operation = alarmBroadcastPendingIntent(1001)
-        val idleOperation = alarmBroadcastPendingIntent(1004)
-        val info = AlarmManager.AlarmClockInfo(triggerAtMillis, alarmActivityPendingIntent())
-        alarmManager.setAlarmClock(info, operation)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            alarmManager.setExactAndAllowWhileIdle(
-                AlarmManager.RTC_WAKEUP,
-                triggerAtMillis,
-                idleOperation
-            )
-        } else {
-            alarmManager.setExact(AlarmManager.RTC_WAKEUP, triggerAtMillis, idleOperation)
-        }
-        schedulePreAlarmCountdown(triggerAtMillis)
-        // 「已守护」改用普通常驻通知（不是前台服务）：保留可见反馈，但完全不耗电。
-        showGuardNotification()
-    }
-
-    // 响铃前 10 分钟安排一个倒计时通知（Live Update）；若已不足 10 分钟则立即显示。
-    private fun schedulePreAlarmCountdown(triggerAtMillis: Long) {
-        val leadAt = triggerAtMillis - AlarmReceiver.PRE_ALARM_LEAD_MILLIS
-        if (leadAt <= System.currentTimeMillis()) {
-            AlarmReceiver.showCountdownNotification(this, triggerAtMillis)
-            return
-        }
-        val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                alarmManager.setExactAndAllowWhileIdle(
-                    AlarmManager.RTC_WAKEUP,
-                    leadAt,
-                    preAlarmPendingIntent(triggerAtMillis)
-                )
-            } else {
-                alarmManager.setExact(
-                    AlarmManager.RTC_WAKEUP,
-                    leadAt,
-                    preAlarmPendingIntent(triggerAtMillis)
-                )
-            }
-        } catch (_: Exception) {
-        }
-    }
-
-    private fun preAlarmPendingIntent(triggerAtMillis: Long): PendingIntent {
-        return PendingIntent.getBroadcast(
-            this,
-            AlarmReceiver.PRE_ALARM_REQUEST_CODE,
-            Intent(this, AlarmReceiver::class.java)
-                .setAction(AlarmReceiver.ACTION_PRE_ALARM)
-                .putExtra(AlarmReceiver.EXTRA_TRIGGER_AT, triggerAtMillis),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
+    private fun scheduleAlarm(triggerAtMillis: Long, nextTriggerAtMillis: Long) {
+        // 关键省电改动：不再在「排闹钟那一刻」就启动全程前台服务（旧 armForegroundAlarmService 会整夜挂前台、
+        // 是夜间耗电元凶）。真正的响铃靠精确闹钟到点拉起 AlarmReceiver——它被允许在后台起前台服务播音，
+        // 所以「不漏响」不依赖常驻服务。排程细节集中在 AlarmShared.armAlarmAt（与 cancelUpcoming 续排共用）。
+        // 同时把「再下一次」的时刻存给原生：用户在倒计时/贪睡通知点「关闭」时，AlarmReceiver 据此把下一次
+        // 直接续排上，无需打开 App（见 AlarmReceiver.cancelUpcoming）。
+        getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putLong("next_trigger_at", nextTriggerAtMillis)
+            .apply()
+        armAlarmAt(this, triggerAtMillis)
     }
 
     private fun cancelAlarm() {
@@ -254,8 +205,13 @@ class MainActivity : FlutterActivity() {
         alarmManager.cancel(alarmBroadcastPendingIntent(1004))
         // 贪睡再排的闹钟(1005)也要取消：否则贪睡后又在 app 里禁用/删除闹钟，5 分钟后仍会响。
         alarmManager.cancel(alarmBroadcastPendingIntent(AlarmSoundService.SNOOZE_REQUEST_CODE))
-        alarmManager.cancel(alarmActivityPendingIntent())
-        alarmManager.cancel(preAlarmPendingIntent(0L))
+        alarmManager.cancel(alarmShowIntent(this))
+        alarmManager.cancel(preAlarmPendingIntent(this, 0L))
+        // 闹钟被整体取消/全禁用：清掉「再下一次」，免得 cancelUpcoming 据陈旧值误续排。
+        getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .remove("next_trigger_at")
+            .apply()
         val notificationManager =
             getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         notificationManager.cancel(AlarmReceiver.COUNTDOWN_NOTIFICATION_ID)
@@ -272,22 +228,6 @@ class MainActivity : FlutterActivity() {
         } else {
             startService(intent)
         }
-    }
-
-    // setAlarmClock 的 show-intent：用户点系统状态栏「下一个闹钟」芯片时打开本应用。
-    // 只是「查看/编辑」入口，绝不带 launch_alarm（带了会被当成响铃→放鸟叫+假全屏页）。
-    private fun alarmActivityPendingIntent(): PendingIntent {
-        val intent = Intent(this, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or
-                Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                Intent.FLAG_ACTIVITY_SINGLE_TOP
-        }
-        return PendingIntent.getActivity(
-            this,
-            1001,
-            intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
     }
 
     // 配方集中在 AlarmShared.kt，这里只是带上 this 的便捷封装（排程与取消共用，保证可匹配）。
@@ -405,55 +345,6 @@ class MainActivity : FlutterActivity() {
                     WindowManager.LayoutParams.FLAG_ALLOW_LOCK_WHILE_SCREEN_ON
             )
         }
-    }
-
-    // 「已守护」常驻通知：普通低优先级通知（非前台服务），保留可见反馈但不把进程钉在前台。
-    // 排闹钟时显示，响铃时由 AlarmReceiver 清掉（让位给响铃通知），取消闹钟时一并清掉。
-    private fun showGuardNotification() {
-        val notificationManager =
-            getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                GUARD_CHANNEL_ID,
-                "鸟瘾闹钟守护",
-                NotificationManager.IMPORTANCE_LOW
-            ).apply {
-                description = "已设定的下一次鸟鸣闹钟提示"
-                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
-                setShowBadge(false)
-            }
-            notificationManager.createNotificationChannel(channel)
-        }
-        val contentIntent = PendingIntent.getActivity(
-            this,
-            GUARD_CONTENT_REQUEST_CODE,
-            Intent(this, MainActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or
-                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                    Intent.FLAG_ACTIVITY_SINGLE_TOP
-            },
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-        val builder =
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                Notification.Builder(this, GUARD_CHANNEL_ID)
-            } else {
-                @Suppress("DEPRECATION")
-                Notification.Builder(this)
-            }
-        val notification = builder
-            .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
-            .setContentTitle("鸟瘾闹钟已启用")
-            .setContentText("下一次鸟鸣闹钟已守护")
-            .setCategory(Notification.CATEGORY_STATUS)
-            .setPriority(Notification.PRIORITY_LOW)
-            .setOngoing(true)
-            .setAutoCancel(false)
-            .setShowWhen(false)
-            .setVisibility(Notification.VISIBILITY_PUBLIC)
-            .setContentIntent(contentIntent)
-            .build()
-        notificationManager.notify(GUARD_NOTIFICATION_ID, notification)
     }
 
     private fun requestAlarmPermissions() {

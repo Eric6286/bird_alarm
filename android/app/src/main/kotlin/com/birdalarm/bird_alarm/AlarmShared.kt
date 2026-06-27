@@ -1,9 +1,14 @@
 package com.birdalarm.bird_alarm
 
+import android.app.AlarmManager
 import android.app.KeyguardManager
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.os.PowerManager
 
 // 原生侧各组件（接收器 / 服务 / 播放器 / 主活动）共用的状态存储文件名。集中成常量，避免某处手抄
@@ -44,4 +49,114 @@ fun alarmBroadcastPendingIntent(context: Context, requestCode: Int): PendingInte
         Intent(context, AlarmReceiver::class.java).putExtra("launch_alarm", true),
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
     )
+}
+
+// setAlarmClock 的 show-intent：点系统状态栏「下一个闹钟」芯片时打开本应用（仅查看入口，不带 launch_alarm）。
+fun alarmShowIntent(context: Context): PendingIntent {
+    val intent = Intent(context, MainActivity::class.java).apply {
+        flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+            Intent.FLAG_ACTIVITY_CLEAR_TOP or
+            Intent.FLAG_ACTIVITY_SINGLE_TOP
+    }
+    return PendingIntent.getActivity(
+        context, 1001, intent,
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+    )
+}
+
+fun preAlarmPendingIntent(context: Context, triggerAtMillis: Long): PendingIntent {
+    return PendingIntent.getBroadcast(
+        context,
+        AlarmReceiver.PRE_ALARM_REQUEST_CODE,
+        Intent(context, AlarmReceiver::class.java)
+            .setAction(AlarmReceiver.ACTION_PRE_ALARM)
+            .putExtra(AlarmReceiver.EXTRA_TRIGGER_AT, triggerAtMillis),
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+    )
+}
+
+// 响铃前 10 分钟安排倒计时通知（Live Update）；若已不足 10 分钟则立即显示。
+fun schedulePreAlarmCountdown(context: Context, triggerAtMillis: Long) {
+    val leadAt = triggerAtMillis - AlarmReceiver.PRE_ALARM_LEAD_MILLIS
+    if (leadAt <= System.currentTimeMillis()) {
+        AlarmReceiver.showCountdownNotification(context, triggerAtMillis)
+        return
+    }
+    val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+    try {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            alarmManager.setExactAndAllowWhileIdle(
+                AlarmManager.RTC_WAKEUP, leadAt, preAlarmPendingIntent(context, triggerAtMillis)
+            )
+        } else {
+            alarmManager.setExact(
+                AlarmManager.RTC_WAKEUP, leadAt, preAlarmPendingIntent(context, triggerAtMillis)
+            )
+        }
+    } catch (_: Exception) {
+    }
+}
+
+// 「已守护」常驻通知：普通低优先级通知（非前台服务），保留可见反馈但不把进程钉在前台。
+fun showGuardNotification(context: Context) {
+    val notificationManager =
+        context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        val channel = NotificationChannel(
+            MainActivity.GUARD_CHANNEL_ID, "鸟瘾闹钟守护", NotificationManager.IMPORTANCE_LOW
+        ).apply {
+            description = "已设定的下一次鸟鸣闹钟提示"
+            lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+            setShowBadge(false)
+        }
+        notificationManager.createNotificationChannel(channel)
+    }
+    val contentIntent = PendingIntent.getActivity(
+        context, MainActivity.GUARD_CONTENT_REQUEST_CODE,
+        Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                Intent.FLAG_ACTIVITY_SINGLE_TOP
+        },
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+    )
+    val builder =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            Notification.Builder(context, MainActivity.GUARD_CHANNEL_ID)
+        } else {
+            @Suppress("DEPRECATION")
+            Notification.Builder(context)
+        }
+    val notification = builder
+        .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
+        .setContentTitle("鸟瘾闹钟已启用")
+        .setContentText("下一次鸟鸣闹钟已守护")
+        .setCategory(Notification.CATEGORY_STATUS)
+        .setPriority(Notification.PRIORITY_LOW)
+        .setOngoing(true)
+        .setAutoCancel(false)
+        .setShowWhen(false)
+        .setVisibility(Notification.VISIBILITY_PUBLIC)
+        .setContentIntent(contentIntent)
+        .build()
+    notificationManager.notify(MainActivity.GUARD_NOTIFICATION_ID, notification)
+}
+
+// 在 triggerAtMillis 排一个完整闹钟：精确闹钟(setAlarmClock + setExactAndAllowWhileIdle) +
+// 响铃前倒计时 + 已守护通知。MainActivity(Flutter 排程) 与 AlarmReceiver(关闭倒计时后续排下一次) 共用。
+fun armAlarmAt(context: Context, triggerAtMillis: Long) {
+    val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+    val info = AlarmManager.AlarmClockInfo(triggerAtMillis, alarmShowIntent(context))
+    alarmManager.setAlarmClock(info, alarmBroadcastPendingIntent(context, 1001))
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+        alarmManager.setExactAndAllowWhileIdle(
+            AlarmManager.RTC_WAKEUP, triggerAtMillis, alarmBroadcastPendingIntent(context, 1004)
+        )
+    } else {
+        alarmManager.setExact(
+            AlarmManager.RTC_WAKEUP, triggerAtMillis, alarmBroadcastPendingIntent(context, 1004)
+        )
+    }
+    schedulePreAlarmCountdown(context, triggerAtMillis)
+    showGuardNotification(context)
 }

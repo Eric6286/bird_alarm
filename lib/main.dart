@@ -698,9 +698,13 @@ class _AlarmHomePageState extends State<AlarmHomePage>
         }
         // 把整库里"能离线播放的鸟鸣"（内置 asset + 下载到本机的文件）下发给原生，
         // 由原生在响铃那一刻随机选；这样下载的鸟鸣才会真正进入抽取池。
+        // 「再下一次」发生时刻一并下发：用户在倒计时/贪睡通知点「关闭」后，原生据此把下一次直接续排上，
+        // 不用打开 App。
+        final nextAfter = _nextEnabledAlarmDateTime(after: next);
         final pool = _nativeSoundPool();
         await _systemAlarmChannel.invokeMethod<void>('scheduleAlarmAt', {
           'triggerAtMillis': next.millisecondsSinceEpoch,
+          'nextTriggerAtMillis': nextAfter?.millisecondsSinceEpoch ?? 0,
           'label': '鸟瘾闹钟',
           'soundPaths': pool.map((entry) => entry.key).toList(),
           'soundNames': {for (final entry in pool) entry.key: entry.value},
@@ -1275,11 +1279,13 @@ class _AlarmHomePageState extends State<AlarmHomePage>
     return null;
   }
 
-  DateTime? _nextEnabledAlarmDateTime() {
-    final now = DateTime.now();
+  // 最近的一次启用闹钟发生时刻。传 after 则求「严格晚于 after」的那一次（用来算「再下一次」，
+  // 下发给原生，供倒计时/贪睡通知点「关闭」后续排下一次）。
+  DateTime? _nextEnabledAlarmDateTime({DateTime? after}) {
+    final from = after ?? DateTime.now();
     DateTime? best;
     for (final alarm in _alarms.where((alarm) => alarm.enabled)) {
-      final candidate = _nextOccurrence(alarm, from: now);
+      final candidate = _nextOccurrence(alarm, from: from);
       if (candidate == null) continue;
       if (best == null || candidate.isBefore(best)) best = candidate;
     }
