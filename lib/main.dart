@@ -2232,7 +2232,7 @@ class _AboutPage extends StatelessWidget {
   const _AboutPage();
 
   // 关于页展示的版本号——发版时与 pubspec.yaml 的 version 同步更新。
-  static const _appVersion = 'v1.3.0';
+  static const _appVersion = 'v1.3.1';
 
   @override
   Widget build(BuildContext context) {
